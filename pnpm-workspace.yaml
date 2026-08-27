@@ -1,0 +1,12 @@
+# Local development settings only — a consumer installs this bundle into a dsh
+# profile, whose own pnpm-workspace.yaml already carries these values.
+#
+# `autoInstallPeers: false` is the load-bearing one: every `@deepseek-ai/*` peer
+# must come from the harness installation, not from a second copy pnpm fetched.
+# Two cordis instances mean two service registries, and a plugin registered on
+# one is invisible to the other.
+packages:
+  - .
+
+nodeLinker: hoisted
+autoInstallPeers: false

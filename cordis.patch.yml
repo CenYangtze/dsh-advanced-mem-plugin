@@ -1,0 +1,81 @@
+# dsh-advanced-mem-plugin — the bundle layer this package contributes.
+#
+# Applied when a profile lists `dsh-advanced-mem-plugin` in `dsh.profile.bundles`.
+# Rows are ordered as the data flows: the hub, its store and embedder, passive
+# capture, the maintenance engine, then the two model-facing consumers. Cordis
+# resolves injections itself, so this order is documentation rather than a
+# dependency declaration.
+#
+# The store row needs `ctx.storage.domain`, which the `@deepseek-ai/dsh-web-app`
+# bundle mounts (both shipped profiles stack it). Without that service the hub
+# registers no store, `ctx.memory.ready` stays false, capture and recall skip,
+# and the three tools fail loud — memory degrades instead of corrupting a turn.
+#
+# Every field below is deliberately explicit: the plugins declare no default for
+# a retention policy, because the right half-life for a belief depends on how a
+# deployment is used. Override any row from your profile's `cordis.patch.yml` by
+# targeting its `id` — but restate every key, since a patch replaces a row's
+# whole `config` rather than deep-merging it.
+- insert:
+    - id: memory
+      name: dsh-advanced-mem-plugin
+      config:
+        recallLimit: 12
+        profileLimit: 12
+        inferredConfidence: 0.4
+        assertedConfidence: 0.9
+        # An inference unreinforced for 60 days is worth about half what it was.
+        inferredHalfLifeMs: 5184000000
+        # 0 disables erosion: the user said it, so only the user unsays it.
+        assertedHalfLifeMs: 0
+        reinforcementRate: 0.25
+        contradictionRate: 0.5
+        retirementFloor: 0.05
+        activationHops: 2
+        activationFalloff: 0.45
+        recordBudget: 5000
+
+    - id: memory-store
+      name: dsh-advanced-mem-plugin/store-domain
+
+    - id: memory-embedding
+      name: dsh-advanced-mem-plugin/embedding-hash
+      config:
+        dimensions: 512
+
+    - id: memory-observer
+      name: dsh-advanced-mem-plugin/observer
+      config:
+        captureUserMessages: true
+        captureAssistantMessages: false
+        captureToolCalls: true
+        maxTextLength: 4000
+        excludedTools: []
+
+    - id: memory-consolidation
+      name: dsh-advanced-mem-plugin/consolidation
+      config:
+        minObservations: 3
+        observationSaturation: 6
+        maxConfidence: 0.85
+        minSequenceLength: 2
+        maxSequenceLength: 4
+        minSequenceRepeats: 3
+        consolidateEveryTurns: 5
+        sweepEveryTurns: 50
+
+    - id: memory-recall
+      name: dsh-advanced-mem-plugin/recall
+      config:
+        maxCues: 8
+        minConfidence: 0.2
+        injectProfileOnFirstTurn: true
+        profileLimit: 10
+        maxCharacters: 4000
+
+    - id: tool-memory
+      name: dsh-advanced-mem-plugin/tool
+      config:
+        defaultSearchLimit: 8
+        maxSearchLimit: 25
+        maxSummaryLength: 400

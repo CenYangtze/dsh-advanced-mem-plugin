@@ -1,0 +1,105 @@
+{
+  "name": "dsh-advanced-mem-plugin",
+  "version": "0.1.0",
+  "description": "Advanced dual-layer agent memory for the DeepSeek Harness: episodic substrate, semantic graph, passive behaviour-cycle capture, and a model-facing memory protocol",
+  "keywords": [
+    "deepseek-harness",
+    "dsh-bundle",
+    "dsh-plugin",
+    "cordis",
+    "agent-memory",
+    "knowledge-graph"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/CenYangtze/dsh-advanced-mem-plugin.git"
+  },
+  "type": "module",
+  "main": "lib/memory/index.js",
+  "types": "lib/memory/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/memory/index.d.ts",
+      "default": "./lib/memory/index.js"
+    },
+    "./invariant": {
+      "types": "./lib/memory/invariant.d.ts",
+      "default": "./lib/memory/invariant.js"
+    },
+    "./store-domain": {
+      "types": "./lib/memory-store-domain/index.d.ts",
+      "default": "./lib/memory-store-domain/index.js"
+    },
+    "./embedding-hash": {
+      "types": "./lib/memory-embedding-hash/index.d.ts",
+      "default": "./lib/memory-embedding-hash/index.js"
+    },
+    "./observer": {
+      "types": "./lib/memory-observer/index.d.ts",
+      "default": "./lib/memory-observer/index.js"
+    },
+    "./consolidation": {
+      "types": "./lib/memory-consolidation/index.d.ts",
+      "default": "./lib/memory-consolidation/index.js"
+    },
+    "./recall": {
+      "types": "./lib/memory-recall/index.d.ts",
+      "default": "./lib/memory-recall/index.js"
+    },
+    "./tool": {
+      "types": "./lib/tool-memory/index.d.ts",
+      "default": "./lib/tool-memory/index.js"
+    },
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/**/*.js",
+    "lib/**/*.d.ts",
+    "cordis.patch.yml",
+    "README.md",
+    "README.zh.md",
+    "LICENSE"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "scripts": {
+    "build": "tsdown",
+    "prepare": "tsdown",
+    "verify": "node scripts/verify-bundle.mjs",
+    "link-harness": "node scripts/link-harness.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "check": "pnpm run typecheck && pnpm run test && pnpm run build && pnpm run verify"
+  },
+  "dependencies": {
+    "zod": "^4.4.3"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "*",
+    "@deepseek-ai/dsh-agent": "*",
+    "@deepseek-ai/dsh-brand": "*",
+    "@deepseek-ai/dsh-invariants": "*",
+    "@deepseek-ai/dsh-llm": "*",
+    "@deepseek-ai/dsh-session": "*",
+    "@deepseek-ai/dsh-storage-domain": "*",
+    "@deepseek-ai/dsh-system-prompt": "*",
+    "@deepseek-ai/dsh-tools": "*",
+    "@deepseek-ai/schemastery": "*"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh-invariants": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.0",
+    "tsdown": "^0.22.2",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.8"
+  }
+}
