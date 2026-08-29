@@ -10,3 +10,8 @@ packages:
 
 nodeLinker: hoisted
 autoInstallPeers: false
+
+# `tsdown` (the prepare-time build) pulls in esbuild, which has a postinstall
+# build script. pnpm >=10 blocks those until allowed by name.
+allowBuilds:
+  esbuild: true
