@@ -23,6 +23,7 @@ import type {
   MemoryScopeKey,
   MemoryStore,
 } from '../memory/index.ts'
+import { recordUseFor } from '../memory/index.ts'
 import type { Domain, KvTable } from '@deepseek-ai/dsh-storage-domain'
 import { memoryDomainSpec } from './spec.ts'
 
@@ -56,9 +57,12 @@ class ScopeIndex<T extends ScopedItem> {
 
   /**
    * @param table - the durable table this index mirrors.
+   * @param normalize - applied to each row read from the medium, so a value
+   * written before a field existed reads back complete. Rows written later
+   * arrive from the hub already complete and are indexed as given.
    */
-  constructor(private readonly table: KvTable<string, T>) {
-    for (const [, item] of table.entries()) this.index(item)
+  constructor(private readonly table: KvTable<string, T>, normalize: (item: T) => T = item => item) {
+    for (const [, item] of table.entries()) this.index(normalize(item))
   }
 
   /** Add or replace one item in the partition index. */
@@ -141,7 +145,18 @@ export class DomainMemoryStore implements MemoryStore {
   constructor(domain: Domain<typeof memoryDomainSpec>) {
     // The spec keys tables by branded id while the index works in plain
     // strings; the brands are erased at the medium either way.
-    this.recordIndex = new ScopeIndex(domain.table('records'))
+    // A record written before `use` existed carries none. Reading it back as
+    // its kind's default is what stops already-captured tool chatter from being
+    // quoted into a request, without a migration pass over the medium.
+    this.recordIndex = new ScopeIndex(
+      domain.table('records'),
+      // The durable schema admits a row with no `use` so a medium written before
+      // the field existed still validates; the in-memory type does not, which is
+      // why the read is widened here rather than asserted away.
+      record => (record as { use?: MemoryRecord['use'] }).use === undefined
+        ? { ...record, use: recordUseFor(record.kind) }
+        : record,
+    )
     this.nodeIndex = new ScopeIndex(domain.table('nodes'))
     this.edgeIndex = new ScopeIndex(domain.table('edges'))
   }

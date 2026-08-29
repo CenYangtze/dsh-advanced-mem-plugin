@@ -61,6 +61,15 @@ export const Config: z<Config> = z.object({
   maxCharacters: z.number().required(),
 })
 
+/** Line separator; a named constant so the escape survives every edit of this file. */
+const SPLIT = '\n'
+
+/** Blank-line separator between a heading and its body. */
+const GAP = '\n\n'
+
+/** Heading of the whole injected block; the two sections are subheadings under it. */
+const HEADING = '## Memory'
+
 /** Standing preamble; identical every turn so the block reads the same way each time. */
 const PREAMBLE =
   'Recalled memory about this user and workspace, retrieved automatically from earlier '
@@ -117,20 +126,17 @@ function renderProfile(profile: MemoryProfile): string {
 }
 
 /**
- * Assemble the injected block within its character budget.
- * @param heading - the section heading.
+ * Fit rendered lines into a character budget.
+ *
+ * Whole lines are dropped rather than one truncated: half a remembered
+ * preference is a different, possibly wrong, preference.
  * @param body - the rendered lines.
- * @param budget - maximum characters for the whole block.
- * @returns the block, or `undefined` when there is nothing to say.
+ * @param room - characters available for them.
+ * @returns the lines that fit, or `undefined` when none do.
  */
-function assemble(heading: string, body: string, budget: number): string | undefined {
-  if (body.length === 0) return undefined
-  const head = `${heading}\n\n${PREAMBLE}\n\n`
-  const room = budget - head.length
-  if (room <= 0) return undefined
-  if (body.length <= room) return head + body
-  // Drop whole lines rather than truncating one: half a remembered preference
-  // is a different, possibly wrong, preference.
+function fit(body: string, room: number): string | undefined {
+  if (body.length === 0 || room <= 0) return undefined
+  if (body.length <= room) return body
   const kept: string[] = []
   let used = 0
   for (const line of body.split('\n')) {
@@ -138,7 +144,7 @@ function assemble(heading: string, body: string, budget: number): string | undef
     kept.push(line)
     used += line.length + 1
   }
-  return kept.length === 0 ? undefined : head + kept.join('\n')
+  return kept.length === 0 ? undefined : kept.join('\n')
 }
 
 /**
@@ -180,16 +186,30 @@ export function apply(ctx: Context, config: Config): void {
 
     const scopes: MemoryScope[] = [sessionScope(agent.session), { kind: 'user' }]
     const sections: { name: string; text: string }[] = []
+    // One preamble for the whole injection, not one per section. The calibration
+    // rule is the same for both, and stating it twice cost roughly a fifth of the
+    // block's budget to say nothing new.
+    let room = config.maxCharacters - PREAMBLE.length - HEADING.length - 4
+
+    // Lines already shown by the profile are not worth a second slot in the same
+    // message: the model reads one message, and a repeated line reads as two
+    // independent pieces of evidence for the same belief.
+    const shown = new Set<string>()
 
     if (config.injectProfileOnFirstTurn && !profiled.has(agent.session.id)) {
       profiled.add(agent.session.id)
       const profile = ctx.memory.profile(scopes, { limit: config.profileLimit })
-      const block = assemble('## What memory knows about this user', renderProfile(profile), config.maxCharacters)
-      if (block !== undefined) sections.push({ name: `${name}:profile`, text: block })
+      const body = fit(renderProfile(profile), room)
+      if (body !== undefined) {
+        for (const line of body.split(SPLIT)) shown.add(line)
+        const text = `### What memory knows about this user${GAP}${body}`
+        room -= text.length + 2
+        sections.push({ name: `${name}:profile`, text })
+      }
     }
 
     const text = cueText(decision.messages)
-    if (text.length > 0) {
+    if (text.length > 0 && room > 0) {
       const recall = await ctx.memory.recall({
         text,
         scopes,
@@ -197,21 +217,21 @@ export function apply(ctx: Context, config: Config): void {
         minConfidence: config.minConfidence,
         signal,
       })
-      const block = assemble(
-        '## Recalled for this request',
-        recall.cues.map(renderCue).join('\n'),
-        config.maxCharacters,
-      )
-      if (block !== undefined) sections.push({ name: `${name}:recall`, text: block })
+      const rendered = recall.cues.map(renderCue).filter(line => !shown.has(line))
+      const body = fit(rendered.join(SPLIT), room)
+      if (body !== undefined) {
+        sections.push({ name: `${name}:recall`, text: `### Relevant to this request${GAP}${body}` })
+      }
     }
 
     if (sections.length === 0) return decision
+    const block = [`${HEADING}${GAP}${PREAMBLE}`, ...sections.map(section => section.text)].join(GAP)
     return {
       kind: 'enter',
       messages: [
         ...decision.messages,
         createUserMessage({
-          content: [{ type: 'text', text: sections.map(section => section.text).join('\n\n') }],
+          content: [{ type: 'text', text: block }],
           source: { kind: 'plugin', plugin: name, form: 'snapshot', sections },
         }),
       ],

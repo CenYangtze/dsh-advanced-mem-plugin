@@ -51,6 +51,10 @@
       "types": "./lib/tool-memory/index.d.ts",
       "default": "./lib/tool-memory/index.js"
     },
+    "./command": {
+      "types": "./lib/command-memory/index.d.ts",
+      "default": "./lib/command-memory/index.js"
+    },
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./package.json": "./package.json"
   },
@@ -83,6 +87,7 @@
     "@deepseek-ai/cordis": "*",
     "@deepseek-ai/dsh-agent": "*",
     "@deepseek-ai/dsh-brand": "*",
+    "@deepseek-ai/dsh-commands": "*",
     "@deepseek-ai/dsh-invariants": "*",
     "@deepseek-ai/dsh-llm": "*",
     "@deepseek-ai/dsh-session": "*",

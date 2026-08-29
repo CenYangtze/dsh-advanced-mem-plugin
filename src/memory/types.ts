@@ -93,6 +93,50 @@ export type MemoryRecordKind =
   | 'note'
 
 /**
+ * Whether a layer-0 record may be quoted back to the model, or only counted.
+ *
+ * The two are genuinely different jobs, and conflating them is what makes a
+ * memory system read its own output back as if it were evidence about the user.
+ * A tool invocation is real evidence that a tool was reached for — it is exactly
+ * what usage-frequency mining consumes — but its text is the agent's own
+ * machine-shaped output, and surfacing it as a remembered "episode" tells the
+ * model what it already did rather than anything about the person it works for.
+ *
+ * `evidence` records are indexed, ranked, and spread activation into the graph
+ * like any other; they are simply never emitted as a cue's text unless a caller
+ * asks for them explicitly with {@link MemoryQuery.includeEvidence}.
+ */
+export type MemoryRecordUse = 'recallable' | 'evidence'
+
+/**
+ * The default use for each record kind.
+ *
+ * The split is by author, not by usefulness: what the *user* produced is
+ * quotable, what the *harness* produced about its own activity is not. An
+ * assistant message is the model's own prose, and a tool invocation is the
+ * model's own call — recalling either invites the model to mistake its previous
+ * output for a fact about the user.
+ */
+export const MEMORY_RECORD_USE: Readonly<Record<MemoryRecordKind, MemoryRecordUse>> = {
+  'user-message': 'recallable',
+  'skill-invocation': 'recallable',
+  artifact: 'recallable',
+  note: 'recallable',
+  'assistant-message': 'evidence',
+  'tool-invocation': 'evidence',
+  'procedure-step': 'evidence',
+}
+
+/**
+ * Classify a record kind's default use.
+ * @param kind - the producing kind.
+ * @returns whether records of that kind are quotable or evidence-only.
+ */
+export function recordUseFor(kind: MemoryRecordKind): MemoryRecordUse {
+  return MEMORY_RECORD_USE[kind]
+}
+
+/**
  * How faithfully the record's `text` reproduces what actually happened.
  * `verbatim` is the original wording, `summary` is a lossy reduction of a known
  * original, and `derived` is a statement no single original makes. Consumers that
@@ -209,6 +253,12 @@ export interface MemoryRecord {
   readonly text: string
   /** How faithfully `text` reproduces the original. */
   readonly fidelity: MemoryFidelity
+  /**
+   * Whether this record may be quoted back as recalled text. Defaults from
+   * {@link recordUseFor}; a record captured before this field existed reads back
+   * as its kind's default, so an existing store needs no migration pass.
+   */
+  readonly use: MemoryRecordUse
   /** Lexical retrieval keys extracted at capture time. */
   readonly terms: readonly string[]
   /** References to non-text originals; never inlined bytes. */

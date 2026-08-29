@@ -40,6 +40,7 @@ import {
   MemoryRecordId,
   meetsFidelity,
   memoryScopeKey,
+  recordUseFor,
 } from './types.ts'
 import type {
   MemoryDecay,
@@ -60,6 +61,7 @@ import type {
   MemoryRecall,
   MemoryAssertion,
   MemoryObservation,
+  MemorySuggestion,
   MemoryRelationInput,
   MemorySignal,
 } from './query.ts'
@@ -87,11 +89,13 @@ export {
 export type { LexicalDocument, ScoredItem } from './scoring.ts'
 export {
   MEMORY_FIDELITY_ORDER,
+  MEMORY_RECORD_USE,
   MemoryEdgeId,
   MemoryNodeId,
   MemoryRecordId,
   meetsFidelity,
   memoryScopeKey,
+  recordUseFor,
 } from './types.ts'
 export type {
   MemoryAttachment,
@@ -105,6 +109,7 @@ export type {
   MemoryProvenance,
   MemoryRecord,
   MemoryRecordKind,
+  MemoryRecordUse,
   MemoryRef,
   MemoryRelation,
   MemoryScope,
@@ -120,6 +125,7 @@ export type {
   MemoryProfile,
   MemoryQuery,
   MemoryRecall,
+  MemorySuggestion,
   MemoryRelationInput,
   MemorySignal,
 } from './query.ts'
@@ -434,6 +440,7 @@ export class MemoryRuntime extends Service {
       kind: observation.kind,
       text,
       fidelity: observation.fidelity,
+      use: observation.use ?? recordUseFor(observation.kind),
       terms: tokenize(`${text} ${captions}`),
       attachments,
       provenance: observation.provenance ?? {},
@@ -663,6 +670,11 @@ export class MemoryRuntime extends Service {
     }
     for (const fused of fusedRecords) {
       const record = fused.item
+      // Evidence-use records earned their place in the ranking and have already
+      // fed activation above; what they must not do is come back as quoted text.
+      // Skipping them here rather than at the candidate filter is deliberate:
+      // dropping them earlier would also drop the graph signal they carry.
+      if (record.use === 'evidence' && query.includeEvidence !== true) continue
       const signals: MemorySignal[] = []
       const lexicalPosition = lexicalRecordPositions.get(record.id)
       if (lexicalPosition !== undefined) {
@@ -717,6 +729,49 @@ export class MemoryRuntime extends Service {
       .filter(edge => edge.status === 'active' && included.has(edge.from) && included.has(edge.to))
       .map(edge => this.applyDecayEdge(edge, now))
     return { nodes, edges, total: ranked.length }
+  }
+
+  /**
+   * What this person is likely to want to pick up, from what memory holds.
+   *
+   * Ranked the same way the profile is — decayed confidence weighted by the
+   * evidence behind it — but restricted to the node types that name work rather
+   * than describe how it should be done. A surface with no query yet (a fresh
+   * session, an empty composer) has nothing else to go on, and this is the one
+   * derivation that turns a memory graph into an opening move.
+   *
+   * Deriving it here rather than in a UI is deliberate: the ranking, the decay,
+   * and the choice of which types qualify are memory's judgments, and a second
+   * surface reimplementing them would drift from this one.
+   * @param scopes - the scope chain to read, most specific first.
+   * @param options - optional cap and clock reading.
+   * @returns suggestions, most worth offering first; empty when memory holds no work.
+   */
+  suggest(scopes: readonly MemoryScope[], options?: { limit?: number; now?: number }): MemorySuggestion[] {
+    const now = options?.now ?? Date.now()
+    const limit = options?.limit ?? this.config.profileLimit
+    // Read the whole chain rather than the profile's top slice: a project can
+    // sit below a dozen preferences in the profile and still be the only thing
+    // here worth starting from.
+    const kinds: Readonly<Record<string, MemorySuggestion['kind']>> = {
+      project: 'project', routine: 'routine', procedure: 'procedure',
+    }
+    return [...this.store.nodes(scopeKeys(scopes))]
+      .filter(node => node.status === 'active' && Object.hasOwn(kinds, node.type))
+      .map(node => this.applyDecay(node, now))
+      .filter(node => node.confidence >= this.config.retirementFloor)
+      .sort((left, right) =>
+        right.confidence * Math.log1p(right.support.observations + right.support.reinforcements)
+        - left.confidence * Math.log1p(left.support.observations + left.support.reinforcements))
+      .slice(0, limit)
+      .map(node => ({
+        /* v8 ignore next -- the filter above admits only the three mapped types */
+        kind: kinds[node.type] ?? 'project',
+        subject: node.label,
+        reason: node.summary,
+        confidence: node.confidence,
+        node,
+      }))
   }
 
   /**

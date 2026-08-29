@@ -2,7 +2,7 @@
 
 English | [中文](design.zh.md)
 
-Cross-session memory of the person the agent works with. The [package map](../README.md#whats-in-the-bundle) lists the seven plugins; this document records why the subsystem is shaped the way it is.
+Cross-session memory of the person the agent works with. The [package map](../README.md#whats-in-the-bundle) lists the eight plugins; this document records why the subsystem is shaped the way it is.
 
 ## The problem
 
@@ -70,6 +70,27 @@ Capture **reads the log** rather than intercepting the loop. It therefore observ
 
 Messages sourced by a plugin, the model, or a tool are skipped. Those are the harness talking to itself; capturing them would feed the graph its own output as if it were evidence about the user — including, circularly, the memory block that recall just injected.
 
+### Evidence is not the same as material
+
+Skipping harness-authored *messages* is not enough on its own, because tool calls are captured deliberately: the frequency with which a person's agent reaches for a tool is exactly what usage mining consumes. But a tool call's text is the agent's own machine-shaped output, and an early version of this subsystem stored the raw argument JSON and then let recall quote it back — so a session would open by telling the model what it had already done, in whole `run_code` programs.
+
+The missing distinction is **use**, a first-class field beside fidelity:
+
+| Use | Kinds | Indexed | Spreads activation | Quoted back |
+|---|---|---|---|---|
+| `recallable` | `user-message`, `skill-invocation`, `artifact`, `note` | yes | yes | yes |
+| `evidence` | `tool-invocation`, `assistant-message`, `procedure-step` | yes | yes | **no** |
+
+The split is by author, not by usefulness. Evidence records rank and spread activation like any other — an affinity node still lights up when the query matches the calls behind it — they are simply never emitted as a cue's text. `MemoryQuery.includeEvidence` lifts that for an audit surface; nothing on a request path sets it.
+
+A record captured before this field existed reads back as its kind's default, so an existing store corrects itself on first read rather than needing a migration.
+
+### What a tool call is worth keeping
+
+Only the one line a human would use to name it. The observer takes the tool name plus a short label drawn from the first descriptive argument it finds (`description`, `query`, `pattern`, `command`, `file_path`, …), bounded by `maxToolDigestLength`, and stores `grep — find the config` rather than the argument object. Raw arguments were actively harmful as index material: any query mentioning a path matched an unrelated call that happened to contain it.
+
+Under **Code Mode** the model calls one transport tool and drives every real tool from inside a program, so the outer call says only "a program ran" and mining it learns a preference for `run_code` that nobody expressed. The observer therefore names transports in `transportTools`, skips their own calls, and captures `tool/code-dispatch-start` instead — the dispatches that say which tools were actually reached for.
+
 ## Consolidation: from behavior to belief
 
 Consolidation is where "the user keeps doing X" becomes "the user prefers X". The shipped distiller uses no model at all — frequency, recurrence, and adjacency are the whole of its reasoning — which makes it deterministic, cheap enough to run at every turn boundary, and impossible to hallucinate with.
@@ -122,6 +143,12 @@ Automatic recall answers what memory already thought was relevant. It cannot ans
 The section exists because tools this general are reliably ignored without one. It also carries the calibration rule the rest of the design depends on: recalled memory is a **prior, not an instruction**. Act on a high-confidence memory; verify a low-confidence one; verify anything before an action a mistake would be costly to undo.
 
 The model may assert `preference`, `constraint`, `project`, `entity`, `routine`, and `person`. It may not assert affinities or procedures — those are mined from observed behavior, and letting the model write them would let its own guesses masquerade as usage evidence.
+
+## The surface addressed to the person
+
+Everything above talks to the model. None of it answers the two questions the user has: *what do you think you know about me*, and *how do I make you stop*. `/memory` is the answer to both — it lists what memory believes with confidence and origin on every line, counts how much stored material is evidence-only, searches through the same retrieval automatic recall uses, and retracts a belief by the label the other views print. A system that learns from someone has to let them see and delete what it learned without going through the model to do it.
+
+`ctx.memory.suggest()` is the same graph turned toward the future: the `project`, `routine`, and `procedure` nodes a person keeps returning to, ranked the way the profile is. A preference says *how* to work, not *what* to work on, so those types do not qualify, and when nothing qualifies the answer is "nothing", not a padded list. The derivation lives in the hub rather than in a surface because the ranking and the type choice are memory's judgments — a second surface (a panel on the new-conversation screen, say) renders the same call rather than drifting from it.
 
 ## Composition
 

@@ -23,6 +23,7 @@ function record(
     scope: 'workspace:/repo' as MemoryScopeKey,
     text: 'text',
     fidelity: 'derived',
+    use: 'evidence',
     terms: [],
     attachments: [],
     provenance: {},

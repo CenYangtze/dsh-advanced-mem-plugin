@@ -51,6 +51,13 @@
         captureToolCalls: true
         maxTextLength: 4000
         excludedTools: []
+        # Under Code Mode the model calls one transport and drives every real
+        # tool from inside the program, so the transport's own call says only
+        # "a program ran". Capture the dispatches instead and skip the carrier.
+        captureCodeDispatches: true
+        transportTools: [run_code]
+        # A label, not a transcript: enough to name the call, never its payload.
+        maxToolDigestLength: 120
 
     - id: memory-consolidation
       name: dsh-advanced-mem-plugin/consolidation
@@ -79,3 +86,12 @@
         defaultSearchLimit: 8
         maxSearchLimit: 25
         maxSummaryLength: 400
+
+    # The one surface addressed to the person rather than the model: see what
+    # was learned, what it suggests starting from, and delete what is wrong.
+    - id: command-memory
+      name: dsh-advanced-mem-plugin/command
+      config:
+        profileLimit: 20
+        suggestLimit: 5
+        searchLimit: 10

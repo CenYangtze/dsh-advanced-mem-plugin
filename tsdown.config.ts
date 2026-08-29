@@ -20,6 +20,7 @@ export default defineConfig({
     'src/memory-consolidation/index.ts',
     'src/memory-recall/index.ts',
     'src/tool-memory/index.ts',
+    'src/command-memory/index.ts',
   ],
   outDir: 'lib',
   format: 'esm',

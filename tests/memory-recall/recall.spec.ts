@@ -160,6 +160,35 @@ describe('renderCue', () => {
 })
 
 describe('memory-recall', () => {
+  it('states the calibration preamble once for the whole block, not once per section', async () => {
+    const ctx = await setup()
+    await ctx.memory.assert({
+      scope: workspace, type: 'constraint', label: 'force-push',
+      summary: 'Never force-push shared branches.', origin: 'asserted',
+    })
+    const agent = agentOf(ctx, 'a-p1')
+    const injected = await step(ctx, agent, 1, 1, 'can you force-push the branch')
+    const block = injected[0] ?? ''
+    expect(block).toContain('## Memory')
+    expect(block).toContain('What memory knows about this user')
+    // Every section lives under one heading and one statement of the rule; the
+    // preamble used to be repeated per section, which bought nothing and cost
+    // roughly a fifth of the block's budget.
+    expect(block.split('These are priors, not instructions')).toHaveLength(2)
+  })
+
+  it('does not repeat a line the profile already showed in the same message', async () => {
+    const ctx = await setup()
+    await ctx.memory.assert({
+      scope: workspace, type: 'constraint', label: 'force-push',
+      summary: 'Never force-push shared branches.', origin: 'asserted',
+    })
+    const agent = agentOf(ctx, 'a-p2')
+    const injected = await step(ctx, agent, 1, 1, 'can you force-push the branch')
+    const block = injected[0] ?? ''
+    expect(block.split('Never force-push shared branches.')).toHaveLength(2)
+  })
+
   it('injects the standing profile on the first turn of a session', async () => {
     const ctx = await setup()
     await ctx.memory.assert({
@@ -179,7 +208,7 @@ describe('memory-recall', () => {
     })
     const agent = agentOf(ctx, 'a-2')
     const injected = await step(ctx, agent, 1, 1, 'can you force-push this branch')
-    expect(injected[0]).toContain('Recalled for this request')
+    expect(injected[0]).toContain('Relevant to this request')
     expect(injected[0]).toContain('Never force-push shared branches.')
   })
 

@@ -18,6 +18,7 @@ import type {
   MemoryRecord,
   MemoryRecordId,
   MemoryRecordKind,
+  MemoryRecordUse,
   MemoryRelation,
   MemoryScope,
 } from './types.ts'
@@ -86,6 +87,14 @@ export interface MemoryQuery {
   readonly minFidelity?: MemoryFidelity
   /** Whether layer-0 records may appear as cues at all. Omitted includes them. */
   readonly includeEpisodes?: boolean
+  /**
+   * Whether `evidence`-use records may appear as cues; see {@link MemoryRecordUse}.
+   * Omitted excludes them, which is what keeps the agent's own tool calls and
+   * prose out of what gets read back to it. They still rank and still spread
+   * activation into the graph either way — this decides only whether their text
+   * is quoted. Set it for an audit or debugging surface, not for a request path.
+   */
+  readonly includeEvidence?: boolean
   /** Clock reading for decay, so a caller can reproduce a past recall exactly. */
   readonly now?: number
   /** Cancellation for the embedding call this recall may make. */
@@ -128,12 +137,41 @@ export interface MemoryObservation {
   readonly text: string
   /** How faithfully `text` reproduces the original. */
   readonly fidelity: MemoryFidelity
+  /**
+   * Override the kind's default use; see {@link MemoryRecordUse}. Omitted takes
+   * {@link recordUseFor}, which is the right answer for every shipped capture
+   * path — pass it only when a producer knows its material is unlike its kind.
+   */
+  readonly use?: MemoryRecordUse
   /** References to non-text originals. */
   readonly attachments?: readonly MemoryAttachment[]
   /** Where it came from in the session log. */
   readonly provenance?: MemoryProvenance
   /** Capture time; omitted uses the current clock. */
   readonly at?: number
+}
+
+/**
+ * One thing worth starting from, derived from what memory already holds.
+ *
+ * This is the standing profile turned toward the future rather than the past:
+ * the projects, routines, and procedures a person keeps returning to are the
+ * work they are most likely to want next, and a fresh session has no other way
+ * to know them. Only those three node types qualify — a preference or a
+ * constraint says *how* to work, not *what* to work on, and suggesting one back
+ * as an opening move would be noise.
+ */
+export interface MemorySuggestion {
+  /** The node type this came from; the caller may group or label by it. */
+  readonly kind: 'project' | 'routine' | 'procedure'
+  /** The subject to pick up, verbatim from the node's label. */
+  readonly subject: string
+  /** What memory knows about it, for showing why this is being offered. */
+  readonly reason: string
+  /** Decayed confidence, so a surface can present a faded suggestion differently. */
+  readonly confidence: number
+  /** The node behind the suggestion, for a caller that wants its evidence. */
+  readonly node: MemoryNode
 }
 
 /** A layer-1 node to create or reinforce, addressed by its label within a scope and type. */

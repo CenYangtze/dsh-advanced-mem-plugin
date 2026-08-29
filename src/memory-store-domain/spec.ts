@@ -87,6 +87,11 @@ export const memoryRecordSchema = z.object({
   ]),
   text: z.string().min(1),
   fidelity: z.union([z.literal('verbatim'), z.literal('summary'), z.literal('derived')]),
+  // Backfilled rather than required: a medium written before `use` existed
+  // still validates, and every such row reads back as its kind's default. That
+  // is what retires already-captured tool chatter from recall on first read,
+  // with no migration pass and no window where the old rows are quotable.
+  use: z.union([z.literal('recallable'), z.literal('evidence')]).optional(),
   terms: z.array(z.string()),
   attachments: z.array(attachmentSchema),
   provenance: provenanceSchema,

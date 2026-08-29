@@ -255,11 +255,37 @@ describe('recall', () => {
 
   it('honors the fidelity floor so derived material cannot drive a strict consumer', async () => {
     const { runtime } = harness()
-    await runtime.remember({ scope: workspace, kind: 'tool-invocation', text: 'bash rm -rf', fidelity: 'derived' })
+    await runtime.remember({ scope: workspace, kind: 'note', text: 'bash rm -rf', fidelity: 'derived' })
     const strict = await runtime.recall({ text: 'bash', scopes: [workspace], minFidelity: 'verbatim' })
     expect(strict.cues).toEqual([])
     const loose = await runtime.recall({ text: 'bash', scopes: [workspace], minFidelity: 'derived' })
     expect(loose.cues.length).toBeGreaterThan(0)
+  })
+
+  it('keeps agent-authored tool calls out of recall while still ranking them', async () => {
+    const { runtime } = harness()
+    await runtime.remember({ scope: workspace, kind: 'tool-invocation', text: 'grep — find the config', fidelity: 'derived' })
+    await runtime.remember({ scope: workspace, kind: 'user-message', text: 'grep for the config please', fidelity: 'verbatim' })
+    const recall = await runtime.recall({ text: 'grep config', scopes: [workspace] })
+    const kinds = recall.cues.map(cue => cue.kind === 'record' ? cue.record.kind : cue.kind)
+    expect(kinds).toEqual(['user-message'])
+  })
+
+  it('returns evidence when a caller asks for it outright, for audit surfaces', async () => {
+    const { runtime } = harness()
+    await runtime.remember({ scope: workspace, kind: 'tool-invocation', text: 'grep — find the config', fidelity: 'derived' })
+    const recall = await runtime.recall({ text: 'grep config', scopes: [workspace], includeEvidence: true })
+    expect(recall.cues).toHaveLength(1)
+  })
+
+  it('lets a producer override the use its kind implies', async () => {
+    const { runtime } = harness()
+    const record = await runtime.remember({
+      scope: workspace, kind: 'tool-invocation', text: 'deploy — ship it', fidelity: 'derived', use: 'recallable',
+    })
+    expect(record.use).toBe('recallable')
+    const recall = await runtime.recall({ text: 'deploy', scopes: [workspace] })
+    expect(recall.cues).toHaveLength(1)
   })
 
   it('reports truncation rather than silently dropping matches', async () => {

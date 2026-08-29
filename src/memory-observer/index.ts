@@ -20,12 +20,16 @@ import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
 import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
+// Type-only: Code Mode declares `tool/code-dispatch-start` on SessionEventMap by
+// module augmentation, so the arm below is only well-typed with it in scope.
+import type {} from '@deepseek-ai/dsh-tools'
 import { sessionScope } from '../memory/index.ts'
 import type {
   MemoryAttachment,
   MemoryObservation,
   MemoryProvenance,
   MemoryRecordKind,
+  MemoryScope,
 } from '../memory/index.ts'
 
 /** Cordis plugin name used by loader diagnostics. */
@@ -62,6 +66,26 @@ export interface Config {
    * knowable from this package.
    */
   excludedTools: string[]
+  /**
+   * Capture the individual tool calls a Code Mode program makes.
+   *
+   * Under Code Mode the model calls one transport tool and drives every real
+   * tool from inside the program, so the outer call says only "a program ran".
+   * These are the dispatches that say which tools were actually reached for,
+   * and without them usage mining under Code Mode learns nothing.
+   */
+  captureCodeDispatches: boolean
+  /**
+   * Tools that only carry other tools, such as Code Mode's `run_code`.
+   *
+   * Their own invocation is not evidence of a preference — every Code Mode call
+   * looks identical — and their arguments are a whole program. They are skipped
+   * so the dispatches inside them are what gets counted. Naming them here rather
+   * than hardcoding keeps the transport a deployment fact, which is what it is.
+   */
+  transportTools: string[]
+  /** Characters kept from a tool call's argument digest; short by design — this is a label, not a transcript. */
+  maxToolDigestLength: number
 }
 
 /** Schemastery validation for {@link Config}. */
@@ -71,6 +95,9 @@ export const Config: z<Config> = z.object({
   captureToolCalls: z.boolean().required(),
   maxTextLength: z.number().required(),
   excludedTools: z.array(z.string()).default([]),
+  captureCodeDispatches: z.boolean().required(),
+  transportTools: z.array(z.string()).default([]),
+  maxToolDigestLength: z.number().required(),
 })
 
 /**
@@ -148,6 +175,54 @@ function capturedKind(sourceKind: string): MemoryRecordKind | undefined {
 }
 
 /**
+ * Argument keys that carry a human-readable label for a call, most telling first.
+ *
+ * Harness tools take a `description` precisely so a call can be named in one
+ * line; the rest are the fields that identify what a call was about when it has
+ * no description.
+ */
+const DIGEST_KEYS: readonly string[] = [
+  'description', 'query', 'prompt', 'pattern', 'command', 'file_path', 'path', 'url',
+]
+
+/**
+ * Reduce a tool call's arguments to a short label.
+ *
+ * Storing the raw argument JSON was the original mistake here. It is the agent's
+ * own machine-shaped output: a whole program under Code Mode, escaped quotes and
+ * absolute paths otherwise. As index material it actively misleads — any query
+ * mentioning a path matches an unrelated call that happened to contain it — and
+ * as recalled text it tells the model what it already did. What is worth keeping
+ * is the one line a human would use to name the call.
+ * @param args - the logged arguments: a JSON string for a native call, an
+ * already-normalized value for a Code Mode dispatch.
+ * @param limit - maximum characters of label to keep.
+ * @returns a short label, or an empty string when the arguments say nothing useful.
+ */
+export function toolDigest(args: unknown, limit: number): string {
+  let parsed: unknown = args
+  if (typeof args === 'string') {
+    try {
+      parsed = JSON.parse(args)
+    } catch {
+      // Not JSON, so there is no field to name the call by. The tool name alone
+      // is a better record than an arbitrary prefix of an unparseable blob.
+      return ''
+    }
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return ''
+  const fields = parsed as Record<string, unknown>
+  for (const key of DIGEST_KEYS) {
+    const value = fields[key]
+    if (typeof value !== 'string') continue
+    const line = value.trim().split('\n')[0]?.trim() ?? ''
+    if (line.length === 0) continue
+    return line.length <= limit ? line : `${line.slice(0, limit)}…`
+  }
+  return ''
+}
+
+/**
  * Reduce text to the configured budget.
  * @param text - the captured text.
  * @param limit - maximum characters to keep.
@@ -170,7 +245,36 @@ export function apply(ctx: Context, config: Config): void {
       `memory-observer: maxTextLength must be a positive safe integer, got ${String(config.maxTextLength)}`,
     )
   }
+  if (!Number.isSafeInteger(config.maxToolDigestLength) || config.maxToolDigestLength < 1) {
+    throw new TypeError(
+      `memory-observer: maxToolDigestLength must be a positive safe integer, got ${String(config.maxToolDigestLength)}`,
+    )
+  }
   const excluded = new Set(config.excludedTools)
+  const transports = new Set(config.transportTools)
+  /**
+   * Build the observation for one tool call, native or Code Mode dispatch.
+   *
+   * The tool name leads the text so a query naming the tool ranks above one
+   * that merely mentions it, and the digest follows as a label rather than a
+   * transcript. Fidelity is `derived` because no original says this sentence,
+   * and the kind's default use keeps it out of what gets read back to the model.
+   */
+  const toolObservation = (
+    scope: MemoryScope,
+    tool: string,
+    args: unknown,
+    where: MemoryProvenance,
+  ): MemoryObservation => {
+    const digest = toolDigest(args, config.maxToolDigestLength)
+    return {
+      scope,
+      kind: 'tool-invocation',
+      text: digest.length === 0 ? tool : `${tool} — ${digest}`,
+      fidelity: 'derived',
+      provenance: where,
+    }
+  }
   // One chain, so records land in log order and a slow medium cannot interleave
   // two writes for the same turn. Failures are contained per write: memory is
   // an enhancement, and a broken medium must not take the session with it.
@@ -228,16 +332,26 @@ export function apply(ctx: Context, config: Config): void {
         if (!config.captureToolCalls) return
         const call = event.data
         if (excluded.has(call.name)) return
-        const reduced = truncate(call.arguments, config.maxTextLength)
-        enqueue({
-          scope,
-          kind: 'tool-invocation',
-          // The tool name leads the text so the lexical index ranks a query
-          // naming the tool above one merely mentioning it in an argument.
-          text: `${call.name} ${reduced.text}`,
-          fidelity: 'derived',
-          provenance: { ...provenance, turn: call.turn, callId: call.callId, tool: call.name },
-        })
+        // A transport call carries other calls; the dispatches inside it are
+        // captured instead, so counting the transport too would count every
+        // Code Mode turn as a preference for one tool nobody chose.
+        if (transports.has(call.name)) return
+        enqueue(toolObservation(scope, call.name, call.arguments, {
+          ...provenance, turn: call.turn, callId: call.callId, tool: call.name,
+        }))
+        return
+      }
+      case 'tool/code-dispatch-start': {
+        // Code Mode's real tool calls. Taken at dispatch start rather than at
+        // completion: this is the moment the model reached for the tool, which
+        // is what usage mining is about, and it stays symmetric with `tool/call`
+        // where no result is observed either.
+        if (!config.captureToolCalls || !config.captureCodeDispatches) return
+        const dispatch = event.data
+        if (excluded.has(dispatch.name) || transports.has(dispatch.name)) return
+        enqueue(toolObservation(scope, dispatch.name, dispatch.arguments, {
+          ...provenance, callId: dispatch.subCallId, tool: dispatch.name,
+        }))
         return
       }
       default:

@@ -1,6 +1,6 @@
 # AGENTS.md
 
-An out-of-tree DeepSeek Harness **bundle**: seven Cordis plugins that give the agent cross-session memory. Read [README.md](README.md) for what it does and how a user installs it; this file is the working contract for changing it.
+An out-of-tree DeepSeek Harness **bundle**: eight Cordis plugins that give the agent cross-session memory. Read [README.md](README.md) for what it does and how a user installs it; this file is the working contract for changing it.
 
 ## Commands
 
@@ -8,7 +8,7 @@ An out-of-tree DeepSeek Harness **bundle**: seven Cordis plugins that give the a
 |---|---|
 | `pnpm run link-harness ../deepseek-harness` | One-time dev setup: junction every `@deepseek-ai/*` peer to a harness checkout. |
 | `pnpm run typecheck` | `tsc --noEmit` over `src/`, `tests/`, and the configs. |
-| `pnpm run test` | 127 tests, one suite per plugin. |
+| `pnpm run test` | 154 tests, one suite per plugin. |
 | `pnpm run build` | `tsdown` → `lib/`. Also the `prepare` script pnpm runs on a git install. |
 | `pnpm run verify` | Patch rows resolve through the exports map; each entry point has exactly one plugin shape. |
 | `pnpm run check` | All four, in order. Run before pushing — nothing on the server runs them. |
@@ -20,6 +20,8 @@ An out-of-tree DeepSeek Harness **bundle**: seven Cordis plugins that give the a
 **A module is a service *or* a function plugin, never both.** A service module default-exports its class and nothing else plugin-shaped; a function plugin named-exports `name` / `inject` / `Config` / `apply` and has no default export. Mixing them makes the Loader drop the plugin namespace — silently, at boot. `pnpm run verify` is what catches it.
 
 **No hardcoded tunables.** Every knob is a required `Config` field. The right half-life for a belief depends on the deployment, so a default would be an unsupported choice rather than a convenience; [cordis.patch.yml](cordis.patch.yml) is where this package states a working set, and a user's profile patch layer is where they override it.
+
+**Capture and recall are different questions.** A record's `use` decides whether it may be quoted back, and it is set by *author*, not by usefulness: the agent's own tool calls and prose are `evidence` — indexed, ranked, spreading activation, never read back to the model. Anything that starts storing raw tool arguments, or lifts the evidence filter on a request path, reintroduces the bug where a session opened by telling the model what it had already done.
 
 **Every layer-1 belief cites layer-0 evidence.** A node or edge without supporting records cannot be audited, corrected against its source, or re-derived when the distiller improves. Keep it that way when adding a distiller.
 
@@ -39,6 +41,7 @@ src/memory-observer/        session/event capture
 src/memory-consolidation/   behaviour-cycle distiller + turn scheduler
 src/memory-recall/          agent/pre-step retrieval and injection
 src/tool-memory/            memory_search / memory_write / memory_forget + prompt section
+src/command-memory/         the /memory command: the surface addressed to the person
 tests/<plugin>/             suites drive the real plugin bodies on real registries
 docs/design.md              why the subsystem is shaped this way (+ .zh.md)
 ```

@@ -96,6 +96,17 @@ function validateRecord(record: MemoryRecord, fail: InvariantFailure): void {
       fail(`memory record ${record.id} references an original with no locator, so the original is unreachable`)
     }
   }
+  // A record whose use is unset would be quoted back by every consumer that
+  // tests for `evidence`, which is precisely how the agent's own output reaches
+  // its own context. Catching it here keeps that a startup failure rather than a
+  // slow leak into what the model reads.
+  // Read through a widened view: the type says this is one of two literals, but
+  // an invariant exists for the case where a medium or a hand-edited row says
+  // otherwise, and that is precisely what the compiler cannot see.
+  const use: string = record.use
+  if (use !== 'recallable' && use !== 'evidence') {
+    fail(`memory record ${record.id} declares use ${JSON.stringify(record.use)}, which is neither recallable nor evidence`)
+  }
 }
 
 /** Install validation for every belief change and every captured record. */

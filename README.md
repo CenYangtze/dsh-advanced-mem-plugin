@@ -59,7 +59,7 @@ dsh plugin --profile web add ./dsh-advanced-mem-plugin-0.1.0.tgz
 ### Verify
 
 ```sh
-dsh --profile web --dump-config    # shows a "# == dsh-advanced-mem-plugin" layer with 7 rows
+dsh --profile web --dump-config    # shows a "# == dsh-advanced-mem-plugin" layer with 8 rows
 dsh --profile web
 ```
 
@@ -67,7 +67,7 @@ dsh --profile web
 
 ## What's in the bundle
 
-Seven plugins, one per role, ordered as the data flows. The `id` column is what you target from your own patch layer; the `name` column is the module the row loads.
+Eight plugins, one per role, ordered as the data flows. The `id` column is what you target from your own patch layer; the `name` column is the module the row loads.
 
 | id | name | Role |
 |---|---|---|
@@ -78,8 +78,9 @@ Seven plugins, one per role, ordered as the data flows. The `id` column is what 
 | `memory-consolidation` | `…/consolidation` | **Service Provider + scheduler** — mines behaviour cycles into graph nodes; runs maintenance sweeps. |
 | `memory-recall` | `…/recall` | **Consumer** — retrieves and injects relevant memory once per turn on `agent/pre-step`. |
 | `tool-memory` | `…/tool` | **Consumer** — three model-facing tools plus the memory protocol prompt section. |
+| `command-memory` | `…/command` | **Consumer** — the `/memory` command, the one surface addressed to the person rather than the model. |
 
-### The two halves of the loop
+### The loop, in three parts
 
 **Passive.** The observer captures user turns and tool/skill invocations from the session log — it never intercepts the agent loop, so it cannot change what the model sees, and a failing store degrades memory instead of stalling a turn. Every few turns the consolidator mines what accumulated: an action used often enough becomes a `tool-affinity` or `skill-affinity` node; a sequence of actions repeated within turns becomes a `procedure` node. This is the *"the user keeps reaching for this skill, so try it next time"* path, and it uses **no model** — frequency, recurrence, and adjacency are the whole of its reasoning, which makes it cheap, deterministic, and impossible to hallucinate with.
 
@@ -92,6 +93,17 @@ Seven plugins, one per role, ordered as the data flows. The `id` column is what 
 | `memory_forget` | Retract a belief, or erase the material behind it. |
 
 `memory_write` accepts only the subject types a model can honestly assert — `preference`, `constraint`, `project`, `entity`, `routine`, `person`. The affinity and procedure types are withheld: those are evidence of observed behaviour, and letting a model assert them would dress its own guesses up as usage counts.
+
+**Yours.** `/memory` answers the two questions the model-facing halves cannot: *what do you think you know about me*, and *how do I make you stop*.
+
+| Line | What it does |
+|---|---|
+| `/memory` | What memory believes, with confidence and origin on every line, then what it suggests picking up. |
+| `/memory search <query>` | The same hybrid retrieval automatic recall uses. |
+| `/memory stats` | Counts by layer and node type, and how much material is evidence-only. |
+| `/memory forget <label>` | Retract every active belief carrying that label. |
+
+Suggestions come from `ctx.memory.suggest()`, which admits only `project`, `routine`, and `procedure` nodes — a preference says *how* to work, not *what* to work on. When memory holds none of those, the command says so rather than padding the list.
 
 ## Configuration
 
@@ -131,7 +143,28 @@ To capture assistant messages too, or to keep a noisy tool out of the substrate:
     captureToolCalls: true
     maxTextLength: 4000
     excludedTools: [bash]
+    captureCodeDispatches: true
+    transportTools: [run_code]
+    maxToolDigestLength: 120
 ```
+
+## What gets captured, and what gets read back
+
+These are two different questions, and conflating them is the bug this plugin's second iteration fixed. Tool calls *are* captured — the frequency with which your agent reaches for a tool is exactly what usage mining consumes — but a tool call's text is the agent's own machine-shaped output. An earlier version stored the raw argument JSON and let recall quote it back, so a session would open by telling the model what it had already done, in whole `run_code` programs.
+
+Records therefore carry a **use** alongside their fidelity:
+
+| Use | Kinds | Indexed | Spreads activation | Quoted back to the model |
+|---|---|---|---|---|
+| `recallable` | `user-message`, `skill-invocation`, `artifact`, `note` | yes | yes | yes |
+| `evidence` | `tool-invocation`, `assistant-message`, `procedure-step` | yes | yes | **no** |
+
+The split is by author, not by usefulness. Evidence still ranks and still lights up the graph — an affinity node surfaces when a query matches the calls behind it — it simply never becomes a cue's text. `MemoryQuery.includeEvidence` lifts that for an audit surface; nothing on a request path sets it. A record captured before this field existed reads back as its kind's default, so an existing store corrects itself on first read with no migration.
+
+Two things follow at capture time:
+
+- **A tool call is stored as a label, not a transcript.** The tool name plus the first descriptive argument (`description`, `query`, `pattern`, `command`, `file_path`, …), bounded by `maxToolDigestLength`: `grep — find the config`, never the argument object. Raw arguments were actively harmful as index material — any query mentioning a path matched an unrelated call that happened to contain it.
+- **Code Mode is understood.** Under Code Mode the model calls one transport tool and drives every real tool from inside a program, so mining the outer call learns a preference for `run_code` that nobody expressed. Transports are named in `transportTools`, their own calls are skipped, and `tool/code-dispatch-start` is captured instead — the dispatches that say which tools were actually used.
 
 ## How retrieval works
 
@@ -163,7 +196,7 @@ cd deepseek-harness && pnpm install && pnpm run build:lib:host && cd ..
 cd dsh-advanced-mem-plugin
 pnpm install
 pnpm run link-harness ../deepseek-harness   # junctions the @deepseek-ai/* peers
-pnpm run check                              # typecheck → 127 tests → build → verify
+pnpm run check                              # typecheck → 154 tests → build → verify
 ```
 
 `link-harness` reproduces locally what a profile does at runtime: it points every `@deepseek-ai/*` peer at one harness installation. That single-instance property is load-bearing — two copies of cordis mean two service registries, and a plugin registered on one is invisible to the other. It is why every harness package is a **peer** dependency here and why `autoInstallPeers: false` is set.
@@ -176,11 +209,12 @@ pnpm run check                              # typecheck → 127 tests → build 
 src/memory/               the hub: types, scoring, providers, query, service
 src/memory-store-domain/  durable store + zod record schemas
 src/memory-embedding-hash/  FNV-1a feature-hashing embedder
-src/memory-observer/      session-log capture
+src/memory-observer/      session-log capture, tool digests, Code Mode dispatches
 src/memory-consolidation/ behaviour-cycle distiller + scheduler
 src/memory-recall/        pre-step retrieval and injection
 src/tool-memory/          three tools + the memory protocol prompt
-tests/                    127 tests, one suite per plugin
+src/command-memory/       the /memory command
+tests/                    154 tests, one suite per plugin
 ```
 
 ## Known limitations

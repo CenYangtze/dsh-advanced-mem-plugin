@@ -59,7 +59,7 @@ dsh plugin --profile web add ./dsh-advanced-mem-plugin-0.1.0.tgz
 ### 验证
 
 ```sh
-dsh --profile web --dump-config    # 会出现带 7 行的 "# == dsh-advanced-mem-plugin" 层
+dsh --profile web --dump-config    # 会出现带 8 行的 "# == dsh-advanced-mem-plugin" 层
 dsh --profile web
 ```
 
@@ -67,7 +67,7 @@ dsh --profile web
 
 ## Bundle 内容
 
-七个插件，一个角色一个，按数据流动的顺序排列。`id` 列是你在自己的 patch 层中要瞄准的目标；`name` 列是该行加载的模块。
+八个插件，一个角色一个，按数据流动的顺序排列。`id` 列是你在自己的 patch 层中要瞄准的目标；`name` 列是该行加载的模块。
 
 | id | name | 角色 |
 |---|---|---|
@@ -78,8 +78,9 @@ dsh --profile web
 | `memory-consolidation` | `…/consolidation` | **Service Provider 兼调度方**——把行为周期挖掘为图谱节点；执行维护扫描。 |
 | `memory-recall` | `…/recall` | **Consumer**——在 `agent/pre-step` 上每回合一次地检索并注入相关记忆。 |
 | `tool-memory` | `…/tool` | **Consumer**——三个面向模型的工具，外加记忆协议提示词分节。 |
+| `command-memory` | `…/command` | **Consumer**——`/memory` 命令，唯一面向人而非面向模型的界面。 |
 
-### 记忆闭环的两半
+### 记忆闭环的三个部分
 
 **被动。** 观察者从会话日志中采集用户回合与工具／技能调用——它从不拦截智能体循环，因此无法改变模型所见，而失效的存储只会削弱记忆，不会拖住一个回合。每隔若干回合，巩固器挖掘累积下来的素材：使用得足够频繁的动作成为 `tool-affinity` 或 `skill-affinity` 节点；在回合内重复出现的动作序列成为 `procedure` 节点。这正是*"用户总在用这个技能，那么下次就积极尝试它"*的那条路径，而且它**不使用模型**——频次、复现与相邻关系就是它推理的全部，这让它便宜、确定，并且不可能产生幻觉。
 
@@ -92,6 +93,17 @@ dsh --profile web
 | `memory_forget` | 撤回一个信念，或抹除其背后的素材。 |
 
 `memory_write` 只接受模型可以诚实断言的主体类别——`preference`、`constraint`、`project`、`entity`、`routine`、`person`。亲和度与流程类别被保留：那些是被观察行为的证据，让模型断言它们等于让它自己的猜测伪装成使用计数。
+
+**属于你的那一部分。** `/memory` 回答面向模型的那两部分回答不了的问题：*你以为你知道我什么*，以及*我怎么让你别这样*。
+
+| 输入 | 作用 |
+|---|---|
+| `/memory` | 记忆的信念，每行都带置信度与来源，随后是它建议接着做什么。 |
+| `/memory search <query>` | 与自动回忆相同的混合检索。 |
+| `/memory stats` | 按层与节点类型计数，并给出有多少素材是仅作证据的。 |
+| `/memory forget <label>` | 撤回携带该标签的每一个活跃信念。 |
+
+建议来自 `ctx.memory.suggest()`，它只接受 `project`、`routine` 与 `procedure` 节点——偏好说的是*怎么*做，而不是*做什么*。当记忆里没有这些时，命令会直说，而不是凑数。
 
 ## 配置
 
@@ -131,7 +143,28 @@ dsh --profile web
     captureToolCalls: true
     maxTextLength: 4000
     excludedTools: [bash]
+    captureCodeDispatches: true
+    transportTools: [run_code]
+    maxToolDigestLength: 120
 ```
+
+## 什么会被采集，什么会被读回
+
+这是两个不同的问题，而把它们混为一谈，正是本插件第二次迭代所修复的那个缺陷。工具调用**是**被采集的——你的智能体调用某个工具的频次，正是使用挖掘所消费的东西——但工具调用的文本是智能体自己的机器化输出。早期版本存下了原始参数 JSON 并让回忆把它引述回去，于是一个会话会以"告诉模型它已经做过什么"开场，而且是整段 `run_code` 程序。
+
+因此记录在保真度之外还携带一个**用途（use）**：
+
+| 用途 | 种类 | 建索引 | 扩散激活 | 被引述给模型 |
+|---|---|---|---|---|
+| `recallable` | `user-message`、`skill-invocation`、`artifact`、`note` | 是 | 是 | 是 |
+| `evidence` | `tool-invocation`、`assistant-message`、`procedure-step` | 是 | 是 | **否** |
+
+这个划分依据的是作者，而不是有用性。证据依然参与排序、依然点亮图谱——当查询命中背后的那些调用时，亲和度节点会浮现——它只是永远不会成为线索的文本。`MemoryQuery.includeEvidence` 可以为审计界面解除这一限制；请求路径上没有任何东西会设置它。在这个字段存在之前采集的记录会按其种类的默认值读回，因此既有存储在第一次读取时自行更正，无需迁移。
+
+采集时随之而来的有两点：
+
+- **一次工具调用被存为标签，而不是转录。** 工具名加上第一个描述性参数（`description`、`query`、`pattern`、`command`、`file_path`……），以 `maxToolDigestLength` 为界：`grep — find the config`，而绝不是参数对象。原始参数作为索引素材是有害的——任何提到某个路径的查询，都会命中一次恰好包含它的无关调用。
+- **理解 Code Mode。** 在 Code Mode 下，模型调用一个传输工具，并在程序内部驱动每一个真实工具，因此挖掘外层调用学到的是一个没人表达过的"偏好 `run_code`"。传输工具在 `transportTools` 中被点名，它们自身的调用被跳过，转而采集 `tool/code-dispatch-start`——那才是说明哪些工具真正被使用的分发。
 
 ## 检索如何工作
 
@@ -163,7 +196,7 @@ cd deepseek-harness && pnpm install && pnpm run build:lib:host && cd ..
 cd dsh-advanced-mem-plugin
 pnpm install
 pnpm run link-harness ../deepseek-harness   # 为 @deepseek-ai/* 各个 peer 建立 junction
-pnpm run check                              # 类型检查 → 127 个测试 → 构建 → 校验
+pnpm run check                              # 类型检查 → 154 个测试 → 构建 → 校验
 ```
 
 `link-harness` 在本地复现 profile 在运行时所做的事：把每一个 `@deepseek-ai/*` peer 指向同一个 harness 安装。这条"单实例"性质是承重的——两份 cordis 意味着两个服务注册表，注册在其中之一上的插件对另一个不可见。这也是本包把每个 harness 包都声明为 **peer** 依赖、并设置 `autoInstallPeers: false` 的原因。
@@ -176,11 +209,12 @@ pnpm run check                              # 类型检查 → 127 个测试 →
 src/memory/               中枢：类型、打分、提供方、查询、服务
 src/memory-store-domain/  持久存储 + zod 记录 schema
 src/memory-embedding-hash/  FNV-1a 特征哈希嵌入器
-src/memory-observer/      会话日志采集
+src/memory-observer/      会话日志采集、工具摘要、Code Mode 分发
 src/memory-consolidation/ 行为周期蒸馏器 + 调度
 src/memory-recall/        步前检索与注入
 src/tool-memory/          三个工具 + 记忆协议提示词
-tests/                    127 个测试，每个插件一个套件
+src/command-memory/       /memory 命令
+tests/                    154 个测试，每个插件一个套件
 ```
 
 ## 已知局限

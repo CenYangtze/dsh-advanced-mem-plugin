@@ -29,6 +29,9 @@ const baseConfig = {
   captureToolCalls: true,
   maxTextLength: 200,
   excludedTools: [],
+  captureCodeDispatches: true,
+  transportTools: ['run_code'],
+  maxToolDigestLength: 80,
 } satisfies Config
 
 const WORKSPACE = 'workspace:/repo' as MemoryScopeKey
@@ -158,7 +161,7 @@ describe('memory-observer', () => {
     expect(store.written[0]?.terms).toContain('mockup')
   })
 
-  it('captures tool calls with the tool named first, so a query for it ranks the call', async () => {
+  it('captures a tool call as a short label rather than its raw arguments', async () => {
     const { store, session, settle } = await harness()
     session.append('turn/start', { turn: 1 })
     session.append('tool/call', {
@@ -168,9 +171,83 @@ describe('memory-observer', () => {
     expect(store.written[0]).toMatchObject({
       kind: 'tool-invocation',
       fidelity: 'derived',
-      text: 'bash {"command":"ls"}',
+      text: 'bash — ls',
     })
     expect(store.written[0]?.provenance).toMatchObject({ tool: 'bash', turn: 1, callId: 'c-1' })
+  })
+
+  it('marks a tool call evidence-only, so it is never read back to the model', async () => {
+    const { store, session, settle } = await harness()
+    session.append('turn/start', { turn: 1 })
+    session.append('tool/call', {
+      turn: 1, step: 1, callId: CallId('c-1'), name: 'bash', arguments: '{"command":"ls"}',
+    })
+    userTurn(session, 'please list the files')
+    await settle()
+    expect(store.written.find(record => record.kind === 'tool-invocation')?.use).toBe('evidence')
+    expect(store.written.find(record => record.kind === 'user-message')?.use).toBe('recallable')
+  })
+
+  it('names a call by its description when it has one, since that is what a human would call it', async () => {
+    const { store, session, settle } = await harness()
+    session.append('turn/start', { turn: 1 })
+    session.append('tool/call', {
+      turn: 1,
+      step: 1,
+      callId: CallId('c-1'),
+      name: 'write',
+      arguments: JSON.stringify({ description: 'Rewrite the landing page', file_path: '/repo/index.html' }),
+    })
+    await settle()
+    expect(store.written[0]?.text).toBe('write — Rewrite the landing page')
+  })
+
+  it('keeps only the tool name when the arguments say nothing nameable', async () => {
+    const { store, session, settle } = await harness()
+    session.append('turn/start', { turn: 1 })
+    session.append('tool/call', {
+      turn: 1, step: 1, callId: CallId('c-1'), name: 'get_goal', arguments: '{}',
+    })
+    await settle()
+    expect(store.written[0]?.text).toBe('get_goal')
+  })
+
+  it('skips the Code Mode transport and captures the tools the program actually used', async () => {
+    const { store, session, settle } = await harness()
+    session.append('turn/start', { turn: 1 })
+    // What the model calls: one transport carrying a whole program.
+    session.append('tool/call', {
+      turn: 1,
+      step: 1,
+      callId: CallId('c-1'),
+      name: 'run_code',
+      arguments: JSON.stringify({ code: 'await tools.grep({pattern:"x"})', description: 'Search the tree' }),
+    })
+    // What the program actually did.
+    session.append('tool/code-dispatch-start', {
+      rootCallId: CallId('c-1'),
+      parentCallId: CallId('c-1'),
+      subCallId: CallId('c-1:code:1'),
+      name: 'grep',
+      arguments: { pattern: 'x', description: 'Search the tree' },
+    })
+    await settle()
+    expect(store.written.map(record => record.text)).toEqual(['grep — Search the tree'])
+    expect(store.written[0]?.provenance).toMatchObject({ tool: 'grep', callId: 'c-1:code:1' })
+  })
+
+  it('leaves Code Mode dispatches uncaptured when that capture is off', async () => {
+    const { store, session, settle } = await harness({ captureCodeDispatches: false })
+    session.append('turn/start', { turn: 1 })
+    session.append('tool/code-dispatch-start', {
+      rootCallId: CallId('c-1'),
+      parentCallId: CallId('c-1'),
+      subCallId: CallId('c-1:code:1'),
+      name: 'grep',
+      arguments: { pattern: 'x' },
+    })
+    await settle()
+    expect(store.written).toHaveLength(0)
   })
 
   it('never captures harness-injected context, which would feed the graph its own output', async () => {
