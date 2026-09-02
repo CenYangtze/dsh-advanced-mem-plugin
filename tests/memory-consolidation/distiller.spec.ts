@@ -34,9 +34,17 @@ function record(
   }
 }
 
-/** A tool invocation in one session and turn. */
+/** A tool invocation in one session and turn: the agent's own action. */
 function toolCall(tool: string, session: string, turn: number): MemoryRecord {
   return record({ kind: 'tool-invocation', provenance: { tool, sessionId: session as never, turn } })
+}
+
+/** A skill invocation in one session and turn: something the user reached for. */
+function skillCall(skill: string, session: string, turn: number): MemoryRecord {
+  return record({
+    kind: 'skill-invocation', use: 'recallable', fidelity: 'summary',
+    provenance: { skill, sessionId: session as never, turn },
+  })
 }
 
 describe('frequencyConfidence', () => {
@@ -50,8 +58,12 @@ describe('frequencyConfidence', () => {
 })
 
 describe('actionOf', () => {
-  it('reads the tool from provenance', () => {
-    expect(actionOf(toolCall('bash', 's1', 1))).toBe('tool:bash')
+  it('refuses a tool call, because a tool is the agent acting and not the user', () => {
+    expect(actionOf(toolCall('bash', 's1', 1))).toBeUndefined()
+  })
+
+  it('reads a skill from provenance, because the user is the one who reached for it', () => {
+    expect(actionOf(skillCall('deploy', 's1', 1))).toBe('skill:deploy')
   })
 
   it('falls back to the first line for a skill invocation with no named skill', () => {
@@ -67,20 +79,25 @@ describe('actionOf', () => {
     expect(actionOf(record({ kind: 'user-message', text: 'hello' }))).toBeUndefined()
     expect(actionOf(record({ kind: 'tool-invocation' }))).toBeUndefined()
   })
+
+  it('refuses every agent-authored kind, not just tool calls', () => {
+    expect(actionOf(record({ kind: 'assistant-message', text: 'I prefer bash' }))).toBeUndefined()
+    expect(actionOf(record({ kind: 'procedure-step', text: 'step 1' }))).toBeUndefined()
+  })
 })
 
 describe('actionSequences', () => {
   it('groups actions per turn and never spans turns', () => {
     const sequences = actionSequences([
-      toolCall('bash', 's1', 1),
-      toolCall('fs', 's1', 1),
-      toolCall('bash', 's1', 2),
+      skillCall('bash', 's1', 1),
+      skillCall('fs', 's1', 1),
+      skillCall('bash', 's1', 2),
     ])
-    expect(sequences.map(sequence => sequence.actions)).toEqual([['tool:bash', 'tool:fs'], ['tool:bash']])
+    expect(sequences.map(sequence => sequence.actions)).toEqual([['skill:bash', 'skill:fs'], ['skill:bash']])
   })
 
   it('keeps sessions apart even at the same turn number', () => {
-    const sequences = actionSequences([toolCall('bash', 's1', 1), toolCall('fs', 's2', 1)])
+    const sequences = actionSequences([skillCall('bash', 's1', 1), skillCall('fs', 's2', 1)])
     expect(sequences).toHaveLength(2)
   })
 })
@@ -92,43 +109,55 @@ describe('BehaviorCycleDistiller', () => {
   it('proposes an affinity only once a behavior clears the repeat threshold', async () => {
     const twice = await distiller.distill({
       scope,
-      records: [toolCall('bash', 's1', 1), toolCall('bash', 's1', 2)],
+      records: [skillCall('bash', 's1', 1), skillCall('bash', 's1', 2)],
       existing: [],
     })
     expect(twice.nodes).toEqual([])
 
     const thrice = await distiller.distill({
       scope,
-      records: [toolCall('bash', 's1', 1), toolCall('bash', 's1', 2), toolCall('bash', 's2', 1)],
+      records: [skillCall('bash', 's1', 1), skillCall('bash', 's1', 2), skillCall('bash', 's2', 1)],
       existing: [],
     })
     expect(thrice.nodes.map(node => node.label)).toEqual(['bash'])
-    expect(thrice.nodes[0]?.type).toBe('tool-affinity')
+    expect(thrice.nodes[0]?.type).toBe('skill-affinity')
     expect(thrice.nodes[0]?.attributes).toMatchObject({ uses: 3, sessions: 2 })
   })
 
-  it('separates a tool and a skill that share a name', async () => {
+  it('mines the skill and drops the tool of the same name, keeping only the user half', async () => {
     const distillation = await distiller.distill({
       scope,
       records: [
         ...Array.from({ length: 3 }, (_value, index) => toolCall('review', 's1', index)),
-        ...Array.from({ length: 3 }, (_value, index) =>
-          record({ kind: 'skill-invocation', provenance: { skill: 'review', sessionId: 's1' as never, turn: index } })),
+        ...Array.from({ length: 3 }, (_value, index) => skillCall('review', 's1', index)),
       ],
       existing: [],
     })
     const affinities = distillation.nodes.filter(node => node.type.endsWith('-affinity'))
-    expect(affinities.map(node => node.type).sort()).toEqual(['skill-affinity', 'tool-affinity'])
-    expect(affinities.map(node => node.label)).toEqual(['review', 'review'])
+    expect(affinities.map(node => node.type)).toEqual(['skill-affinity'])
+    expect(affinities[0]?.attributes).toMatchObject({ uses: 3 })
+  })
+
+  it('proposes nothing at all from a window of pure tool traffic', async () => {
+    const distillation = await distiller.distill({
+      scope,
+      records: [
+        toolCall('edit', 's1', 1), toolCall('bash', 's1', 1),
+        toolCall('edit', 's1', 2), toolCall('bash', 's1', 2),
+        toolCall('edit', 's1', 3), toolCall('bash', 's1', 3),
+      ],
+      existing: [],
+    })
+    expect(distillation).toEqual({ nodes: [], edges: [] })
   })
 
   it('mines a repeated within-turn sequence into a procedure', async () => {
     const distillation = await distiller.distill({
       scope,
       records: [
-        toolCall('fs', 's1', 1), toolCall('bash', 's1', 1),
-        toolCall('fs', 's1', 2), toolCall('bash', 's1', 2),
-        toolCall('fs', 's1', 3), toolCall('bash', 's1', 3),
+        skillCall('fs', 's1', 1), skillCall('bash', 's1', 1),
+        skillCall('fs', 's1', 2), skillCall('bash', 's1', 2),
+        skillCall('fs', 's1', 3), skillCall('bash', 's1', 3),
       ],
       existing: [],
     })
@@ -140,9 +169,9 @@ describe('BehaviorCycleDistiller', () => {
     const distillation = await distiller.distill({
       scope,
       records: [
-        toolCall('fs', 's1', 1), toolCall('bash', 's1', 1),
-        toolCall('fs', 's1', 2), toolCall('bash', 's1', 2),
-        toolCall('fs', 's1', 3), toolCall('bash', 's1', 3),
+        skillCall('fs', 's1', 1), skillCall('bash', 's1', 1),
+        skillCall('fs', 's1', 2), skillCall('bash', 's1', 2),
+        skillCall('fs', 's1', 3), skillCall('bash', 's1', 3),
       ],
       existing: [],
     })
@@ -156,13 +185,13 @@ describe('BehaviorCycleDistiller', () => {
     const distillation = await distiller.distill({
       scope,
       records: [
-        toolCall('fs', 's1', 1), toolCall('lsp', 's1', 1),
-        toolCall('fs', 's1', 2), toolCall('lsp', 's1', 2),
+        skillCall('fs', 's1', 1), skillCall('lsp', 's1', 1),
+        skillCall('fs', 's1', 2), skillCall('lsp', 's1', 2),
       ],
       existing: [{
         id: 'mem-n-existing' as never,
         scope,
-        type: 'tool-affinity',
+        type: 'skill-affinity',
         label: 'lsp',
         summary: 'Mined last week.',
         attributes: {},

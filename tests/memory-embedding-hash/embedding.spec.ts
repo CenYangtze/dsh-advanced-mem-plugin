@@ -17,6 +17,10 @@ const memoryConfig: MemoryConfig = {
   activationHops: 1,
   activationFalloff: 0.5,
   recordBudget: 100,
+  supportWeight: 0,
+  duplicateThreshold: 1,
+  diversityThreshold: 1,
+  vectorWeight: 1,
 }
 
 describe('embedText', () => {

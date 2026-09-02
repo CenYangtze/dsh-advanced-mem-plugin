@@ -28,8 +28,10 @@ import {
   clampConfidence,
   cosineSimilarity,
   decayedConfidence,
+  rankScore,
   reciprocalRankFusion,
   reinforcedConfidence,
+  similarity,
   tokenize,
   weakenedConfidence,
 } from './scoring.ts'
@@ -83,6 +85,7 @@ export {
   normalizeVector,
   reciprocalRankFusion,
   reinforcedConfidence,
+  similarity,
   tokenize,
   weakenedConfidence,
 } from './scoring.ts'
@@ -211,6 +214,54 @@ export interface Config {
   activationFalloff: number
   /** Layer-0 records retained per scope; a sweep erases the lowest-value overflow. */
   recordBudget: number
+  /**
+   * How much accumulated support lifts a belief in recall.
+   *
+   * Confidence says how much the belief is trusted; support says how often it
+   * has been seen, and they are different claims. But this is the wrong place to
+   * act on the second one, and the number says so: at 0.15 it costs 19 points of
+   * rank-1 accuracy on a node-dense corpus and 5 on a sparse one, because the
+   * rank curve is flat — rank 1 and rank 20 differ by a factor of 1.3 — so a
+   * multiplier of 1.5 outweighs twenty places of lexical evidence. Frequency
+   * belongs where nothing is competing with a query: `profile` and `suggest`
+   * already rank on `confidence × log1p(support)`, and those are untouched.
+   *
+   * Shipped at 0. Raise it only with a measurement, and only on a deployment
+   * whose corpus is smaller than the ones this was swept on.
+   */
+  supportWeight: number
+  /**
+   * Label similarity above which a newly distilled belief is merged into one the
+   * scope already holds instead of being added beside it.
+   *
+   * Applies to distillation only. An explicit `assert` keeps exact-label
+   * semantics, because a caller naming a label means that label — and because
+   * `/memory forget <label>` has to stay predictable. 1 disables merging, which
+   * is what leaves a scope holding six spellings of one preference.
+   */
+  duplicateThreshold: number
+  /**
+   * Cue similarity above which a cue is dropped from a recall as redundant with
+   * one already selected.
+   *
+   * The budget is small and the cost of spending it on restatements is total:
+   * eight near-identical cues crowd out everything else the turn needed. 1
+   * disables the filter and returns a pure score ordering.
+   */
+  diversityThreshold: number
+  /**
+   * How much the vector ranking counts against the lexical one in fusion.
+   *
+   * 1 weighs them equally, which is only right when the embedder knows something
+   * the term index does not. The shipped feature-hash embedder does not: it is a
+   * random projection of token hashes, so its cosine similarity is a noisier
+   * restatement of term overlap. Measured across LoCoMo, LongMemEval and both
+   * halves of PerLTQA, weighing it equally cost up to 8.8 points of recall and
+   * 0.155 of MRR against dropping it entirely. Raise it for an embedder with
+   * real semantics behind it; 0 removes the signal without unmounting the
+   * provider.
+   */
+  vectorWeight: number
 }
 
 /** Empty accumulated support for a layer-1 item created from one observation moment. */
@@ -300,6 +351,24 @@ function scopeKeys(scopes: readonly MemoryScope[]): MemoryScopeKey[] {
   return keys
 }
 
+/**
+ * The text a cue would put in front of the model, for comparing one cue to
+ * another.
+ *
+ * A node contributes its label and summary rather than the summary alone: two
+ * beliefs can be worded differently and still be the same claim about the same
+ * subject, and the label is where the subject lives.
+ * @param cue - the retrieved cue.
+ * @returns the text to compare.
+ */
+function cueText(cue: MemoryCue): string {
+  switch (cue.kind) {
+    case 'node': return `${cue.node.label} ${cue.node.summary}`
+    case 'edge': return cue.edge.claim
+    case 'record': return cue.record.text
+  }
+}
+
 /** Positions in a ranking, so a fused cue can report where each signal placed it. */
 function rankPositions<T>(ranked: readonly ScoredItem<T>[], identify: (item: T) => string): Map<string, number> {
   const positions = new Map<string, number>()
@@ -329,6 +398,10 @@ export class MemoryRuntime extends Service {
     activationHops: z.number().required(),
     activationFalloff: z.number().required(),
     recordBudget: z.number().required(),
+    supportWeight: z.number().required(),
+    duplicateThreshold: z.number().required(),
+    diversityThreshold: z.number().required(),
+    vectorWeight: z.number().required(),
   })
 
   private storeProvider: MemoryStore | undefined
@@ -624,6 +697,7 @@ export class MemoryRuntime extends Service {
     const fusedRecords = reciprocalRankFusion<MemoryRecord>(
       [lexicalRecords.map(entry => entry.item), vectorRecords.map(entry => entry.item)],
       record => record.id,
+      [1, this.config.vectorWeight],
     )
     const activation = this.spreadActivation(lexicalNodes, fusedRecords, edges, nodeById)
 
@@ -643,8 +717,13 @@ export class MemoryRuntime extends Service {
       }
       if (activated > 0) signals.push({ kind: 'graph', value: activated })
       signals.push({ kind: 'confidence', value: node.confidence })
-      const base = lexicalPosition === undefined ? 0 : 1 / (1 + lexicalPosition)
-      cues.push({ kind: 'node', node, score: (base + activated) * (0.5 + 0.5 * node.confidence), signals })
+      const base = rankScore(lexicalPosition)
+      cues.push({
+        kind: 'node',
+        node,
+        score: (base + activated) * (0.5 + 0.5 * node.confidence) * this.supportBoost(node.support),
+        signals,
+      })
     }
     for (const edge of edges) {
       const lexicalPosition = lexicalEdgePositions.get(edge.id)
@@ -656,7 +735,7 @@ export class MemoryRuntime extends Service {
       }
       if (endpointActivation > 0) signals.push({ kind: 'graph', value: endpointActivation })
       signals.push({ kind: 'confidence', value: edge.confidence })
-      const base = lexicalPosition === undefined ? 0 : 1 / (1 + lexicalPosition)
+      const base = rankScore(lexicalPosition)
       const endpoints = [nodeById.get(edge.from), nodeById.get(edge.to)].filter(
         (node): node is MemoryNode => node !== undefined,
       )
@@ -664,7 +743,8 @@ export class MemoryRuntime extends Service {
         kind: 'edge',
         edge,
         endpoints,
-        score: (base + endpointActivation * this.config.activationFalloff) * (0.5 + 0.5 * edge.confidence),
+        score: (base + endpointActivation * this.config.activationFalloff)
+          * (0.5 + 0.5 * edge.confidence) * this.supportBoost(edge.support),
         signals,
       })
     }
@@ -692,10 +772,11 @@ export class MemoryRuntime extends Service {
     }
 
     cues.sort((left, right) => right.score - left.score)
+    const selected = this.diversify(cues, limit)
     const recall: MemoryRecall = {
       query: query.text,
-      cues: cues.slice(0, limit),
-      truncated: cues.length > limit,
+      cues: selected,
+      truncated: cues.length > selected.length,
       semantic: vectorRecords.length > 0,
     }
     this.ctx.emit('memory/recalled', recall, query)
@@ -1045,6 +1126,80 @@ export class MemoryRuntime extends Service {
   }
 
   /** The active node addressed by a scope, type, and label, when one exists. */
+  /**
+   * How much a belief's accumulated support lifts it in recall.
+   *
+   * Logarithmic, so a belief seen twice gains most of what it will ever gain and
+   * a belief seen two hundred times cannot bury everything else. Reinforcements
+   * count alongside observations because a preference restated in a new session
+   * is new evidence, not a duplicate of the old.
+   * @param support - the item's accumulated support.
+   * @returns a multiplier at or above 1.
+   */
+  private supportBoost(support: MemorySupport): number {
+    if (this.config.supportWeight <= 0) return 1
+    return 1 + this.config.supportWeight * Math.log1p(support.observations + support.reinforcements)
+  }
+
+  /**
+   * Take the highest-scoring cues, skipping any that restate one already taken.
+   *
+   * Ranking alone answers "what is most relevant" and never "what does this turn
+   * still not know". With a budget of eight cues those come apart badly: a scope
+   * holding a cluster of near-identical beliefs spends the whole budget on the
+   * cluster and returns nothing else, which is how a graph of tool habits once
+   * filled every slot with restatements of one fact. Comparing each candidate
+   * against what is already selected costs O(limit²) on a limit of ten.
+   *
+   * Redundant cues are skipped rather than truncating the list, so the budget
+   * fills with distinct material instead of being spent short.
+   * @param cues - all qualifying cues, already in descending score order.
+   * @param limit - how many to return.
+   * @returns the selected cues, still in score order.
+   */
+  private diversify(cues: readonly MemoryCue[], limit: number): MemoryCue[] {
+    if (this.config.diversityThreshold >= 1) return cues.slice(0, limit)
+    const selected: MemoryCue[] = []
+    const texts: string[] = []
+    for (const cue of cues) {
+      if (selected.length >= limit) break
+      const text = cueText(cue)
+      if (texts.some(taken => similarity(taken, text) >= this.config.diversityThreshold)) continue
+      selected.push(cue)
+      texts.push(text)
+    }
+    return selected
+  }
+
+  /**
+   * An active node of the same type whose label restates the candidate's.
+   *
+   * Distillation only; see {@link Config.duplicateThreshold}. The best match
+   * wins rather than the first, so a scope holding several near-duplicates
+   * converges on one rather than oscillating between them.
+   * @param scope - the partition to search.
+   * @param type - the candidate's subject class; a preference never merges into a constraint.
+   * @param label - the candidate's label.
+   * @returns the node to merge into, or `undefined` when the candidate is new.
+   */
+  private findSimilarNode(
+    scope: MemoryScopeKey,
+    type: MemoryNode['type'],
+    label: string,
+  ): MemoryNode | undefined {
+    if (this.config.duplicateThreshold >= 1) return undefined
+    let best: MemoryNode | undefined
+    let bestScore = this.config.duplicateThreshold
+    for (const node of this.store.nodes([scope])) {
+      if (node.status !== 'active' || node.type !== type) continue
+      const score = similarity(node.label, label)
+      if (score < bestScore) continue
+      best = node
+      bestScore = score
+    }
+    return best
+  }
+
   private findNode(scope: MemoryScopeKey, type: MemoryNode['type'], label: string): MemoryNode | undefined {
     for (const node of this.store.nodes([scope])) {
       if (node.status === 'active' && node.type === type && node.label === label) return node
@@ -1108,11 +1263,18 @@ export class MemoryRuntime extends Service {
     }
     for (let index = 0; index < lexicalNodes.length; index++) {
       const entry = lexicalNodes[index]
-      if (entry !== undefined) seed(entry.item.id, 1 / (1 + index))
+      // The same transform the cue scores use, so activation arriving at a node
+      // is commensurate with the lexical evidence for it rather than sixty times
+      // larger than the best episode in the scope.
+      if (entry !== undefined) seed(entry.item.id, rankScore(index))
     }
     const citedRecords = new Set(fusedRecords.slice(0, 10).map(entry => entry.item.id))
     for (const node of nodeById.values()) {
-      if (node.evidence.some(id => citedRecords.has(id))) seed(node.id, this.config.activationFalloff)
+      // A belief whose evidence was retrieved is activated as strongly as a
+      // belief matched at the top of the lexical ranking, damped by one hop.
+      if (node.evidence.some(id => citedRecords.has(id))) {
+        seed(node.id, rankScore(0) * this.config.activationFalloff)
+      }
     }
     let frontier = new Map(activation)
     for (let hop = 0; hop < this.config.activationHops; hop++) {
@@ -1142,11 +1304,17 @@ export class MemoryRuntime extends Service {
     if (candidate.evidence.length === 0) {
       throw new MemoryError('invalid-input', `distilled node '${candidate.label}' cites no evidence`)
     }
-    const existed = this.findNode(memoryScopeKey(scope), candidate.type, candidate.label.trim()) !== undefined
+    const key = memoryScopeKey(scope)
+    const label = candidate.label.trim()
+    // Exact first, then near-duplicate: a candidate restating a belief the scope
+    // already holds reinforces it under the label it already has, so the graph
+    // accumulates support rather than synonyms.
+    const exact = this.findNode(key, candidate.type, label)
+    const similar = exact ?? this.findSimilarNode(key, candidate.type, label)
     const node = await this.assert({
       scope,
       type: candidate.type,
-      label: candidate.label,
+      label: similar?.label ?? candidate.label,
       summary: candidate.summary,
       origin: 'inferred',
       confidence: candidate.confidence,
@@ -1154,7 +1322,7 @@ export class MemoryRuntime extends Service {
       at,
       ...candidate.attributes === undefined ? {} : { attributes: candidate.attributes },
     })
-    return { node, created: !existed }
+    return { node, created: similar === undefined }
   }
 
   /** Merge one proposed edge, resolving endpoints by label first among this pass's nodes. */

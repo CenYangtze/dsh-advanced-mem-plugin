@@ -101,6 +101,10 @@ Consolidation is where "the user keeps doing X" becomes "the user prefers X". Th
 
 Confidence from frequency is a saturating exponential of the count: the second observation of a behavior says far more than the twentieth, and no count reaches the ceiling, because counting cannot rule out that the next interaction contradicts it.
 
+Two distillers ship, and both obey the rule above: only material the user authored may be the *subject* of a belief. The behavior-cycle miner reads repetition — but only of skills, which the user invokes, never of tools, which the agent invokes on their behalf. The stated-preference miner reads the other kind of evidence entirely: a person saying outright what they want. Between them they cover "you keep doing this" and "you asked for this", which are different claims with different warrants.
+
+The second exists because the first cannot see a request. Frequency mining learns that something keeps happening and never that someone asked for it, which leaves the most direct evidence a memory system ever gets — "always run the tests first", "别用 npm" — sitting unread in the substrate. Its lexicon is small, bilingual, and anchored: a constraint cue must open its sentence, because an imperative has no subject before its verb and that is the whole difference between "never force-push a shared branch" and "I never got the email".
+
 The distiller is a **seam**, not a fixed component. Several may be mounted; the hub runs them in rank order and merges every proposal through the same reinforcement path. A model-backed distiller that extracts *why* a preference exists slots in beside the frequency miner without either one knowing about the other.
 
 Merging, not appending, is what makes this work. A proposed node whose label already exists in its scope and type is reinforced: its belief rises, its evidence grows, its decay clock resets. That is what turns a repeated behavior into a confident belief instead of a pile of duplicates.

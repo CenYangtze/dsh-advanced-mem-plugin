@@ -78,6 +78,7 @@
     "link-harness": "node scripts/link-harness.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "bench": "node --experimental-transform-types bench/run.ts",
     "check": "pnpm run typecheck && pnpm run test && pnpm run build && pnpm run verify"
   },
   "dependencies": {

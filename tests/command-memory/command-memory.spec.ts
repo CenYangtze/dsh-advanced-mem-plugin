@@ -25,6 +25,10 @@ const memoryConfig = {
   activationHops: 2,
   activationFalloff: 0.5,
   recordBudget: 100,
+  supportWeight: 0,
+  duplicateThreshold: 1,
+  diversityThreshold: 1,
+  vectorWeight: 1,
 } satisfies MemoryConfig
 
 const commandConfig = { profileLimit: 5, suggestLimit: 3, searchLimit: 5 } satisfies commandMemory.Config

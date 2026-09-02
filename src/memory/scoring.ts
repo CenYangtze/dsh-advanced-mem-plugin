@@ -15,6 +15,24 @@ const BM25_B = 0.75
 const RRF_K = 60
 
 /**
+ * Turn a position in a ranking into a score.
+ *
+ * The single rank-to-score transform in the system, and it has to be single: two
+ * transforms means two scales, and cues scored on different scales cannot be
+ * ordered against each other however carefully their priors are tuned. Layer-1
+ * cues once used `1 / (1 + position)` while layer-0 cues came through
+ * {@link reciprocalRankFusion} at `1 / (60 + position + 1)`, which made a belief
+ * worth sixty episodes at the same rank — and a belief ranked twentieth still
+ * worth three of the best episode in the scope.
+ * @param position - zero-based position in a ranking, or `undefined` when the
+ *   signal did not rank the item at all.
+ * @returns the score contribution, or 0 for an unranked item.
+ */
+export function rankScore(position: number | undefined): number {
+  return position === undefined ? 0 : 1 / (RRF_K + position + 1)
+}
+
+/**
  * Matches one run of Han, Hiragana, Katakana, or Hangul characters. These scripts
  * are written without spaces, so a run is one long word token that only an exact
  * repetition can match. Indexing the run's overlapping bigrams alongside it is
@@ -52,6 +70,33 @@ export function tokenize(text: string): string[] {
     for (let index = 0; index + 1 < run.length; index++) push(run.slice(index, index + 2))
   }
   return terms
+}
+
+/**
+ * How much two pieces of text overlap, as Jaccard similarity over their terms.
+ *
+ * Set overlap rather than edit distance, and over {@link tokenize} output rather
+ * than characters, so the measure inherits the tokenizer's handling of case and
+ * of scripts without spaces: "PNPM over npm" and "pnpm over NPM" are the same
+ * text here, and two Chinese sentences overlap through their character bigrams
+ * exactly as they do in the lexical index.
+ *
+ * One function for two jobs on purpose — deciding that a newly distilled belief
+ * restates one already held, and deciding that a cue about to be shown restates
+ * one already shown. Those are the same question asked at two moments, and
+ * answering them differently is how a memory ends up holding six spellings of
+ * one preference and then showing all six.
+ * @param left - the first text.
+ * @param right - the second text.
+ * @returns overlap in the closed unit interval; 0 when either side has no terms.
+ */
+export function similarity(left: string, right: string): number {
+  const a = new Set(tokenize(left))
+  const b = new Set(tokenize(right))
+  if (a.size === 0 || b.size === 0) return 0
+  let shared = 0
+  for (const term of a) if (b.has(term)) shared++
+  return shared / (a.size + b.size - shared)
 }
 
 /** One document offered to {@link bm25Rank}: an opaque handle plus its indexed terms. */
@@ -161,21 +206,30 @@ export function normalizeVector(vector: readonly number[]): number[] {
  * fusion. RRF consumes only positions, so a lexical score in BM25 units and a
  * cosine similarity in the unit interval combine without any calibration step
  * between them, which is what makes hybrid retrieval robust here.
+ * Weights exist because "no calibration between signals" is not the same as
+ * "every signal is worth the same". Unweighted, a ranking that knows nothing
+ * still places its first item above the other signal's tenth — a signal with no
+ * information does not merely fail to help, it actively displaces one that has
+ * some. Weighting is how a signal earns its say.
  * @param rankings - one array per retrieval signal, each already in descending relevance order.
  * @param identify - stable identity of an item, so the same item found by two signals fuses.
+ * @param weights - per-ranking multipliers, positionally matched; a missing entry weighs 1.
  * @returns the fused ranking in descending score order.
  */
 export function reciprocalRankFusion<T>(
   rankings: readonly (readonly T[])[],
   identify: (item: T) => string,
+  weights: readonly number[] = [],
 ): ScoredItem<T>[] {
   const fused = new Map<string, ScoredItem<T>>()
-  for (const ranking of rankings) {
+  for (const [index, ranking] of rankings.entries()) {
+    const weight = weights[index] ?? 1
+    if (weight <= 0) continue
     for (let position = 0; position < ranking.length; position++) {
       const item = ranking[position]
       if (item === undefined) continue
       const key = identify(item)
-      const contribution = 1 / (RRF_K + position + 1)
+      const contribution = weight * rankScore(position)
       const existing = fused.get(key)
       fused.set(key, existing === undefined
         ? { item, score: contribution }

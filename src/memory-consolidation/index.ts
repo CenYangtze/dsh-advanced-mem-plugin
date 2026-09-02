@@ -3,9 +3,15 @@
  *
  * Capture alone produces a growing pile of episodes. This plugin is what turns
  * that pile into knowledge and then keeps it honest over months: it mounts the
- * behavior-cycle distiller, promotes repeated behavior into layer-1 affinities
- * and procedures at turn boundaries, and periodically sweeps the graph so faded
- * inferences retire and overflowing raw material is evicted.
+ * behavior-cycle and stated-preference distillers, promotes what the user
+ * repeated and what they asked for into layer-1 beliefs at turn boundaries, and
+ * periodically sweeps the graph so faded inferences retire and overflowing raw
+ * material is evicted.
+ *
+ * Both distillers obey one rule: only material the user authored may be the
+ * subject of a belief. The agent's own tool calls are kept and indexed, but a
+ * memory that concluded things about the person from them would be describing
+ * the harness back to itself.
  *
  * Passes run on their own chain, off the turn's critical path. A pass that fails
  * is logged and the next one still runs, because a memory that stops maintaining
@@ -19,10 +25,13 @@ import z from '@deepseek-ai/schemastery'
 import { sessionScope } from '../memory/index.ts'
 import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
 import { BehaviorCycleDistiller } from './distiller.ts'
-import type { DistillerPolicy } from './distiller.ts'
+import { StatedPreferenceDistiller } from './stated.ts'
+import type { StatedPolicy } from './stated.ts'
 
 export { BehaviorCycleDistiller, actionOf, actionSequences, frequencyConfidence } from './distiller.ts'
 export type { DistillerPolicy } from './distiller.ts'
+export { StatedPreferenceDistiller, claimsIn, statable } from './stated.ts'
+export type { StatedClaim, StatedPolicy } from './stated.ts'
 
 /** Cordis plugin name used by loader diagnostics. */
 export const name = 'memory-consolidation'
@@ -33,8 +42,11 @@ export const inject = ['memory', 'sessions']
 /** Rank of the deterministic miner; low so it runs before any model-backed distiller. */
 const BEHAVIOR_CYCLE_RANK = 100
 
+/** Rank of the stated-preference miner; after frequency mining, which is cheaper. */
+const STATED_PREFERENCE_RANK = 110
+
 /** Mining thresholds and pass scheduling. */
-export interface Config extends DistillerPolicy {
+export interface Config extends StatedPolicy {
   /**
    * Turns between consolidation passes. Consolidation reads only unpromoted
    * records, so a larger interval costs recall freshness rather than work.
@@ -55,6 +67,9 @@ export const Config: z<Config> = z.object({
   minSequenceLength: z.number().required(),
   maxSequenceLength: z.number().required(),
   minSequenceRepeats: z.number().required(),
+  minStatements: z.number().required(),
+  minSubjectLength: z.number().required(),
+  maxSubjectLength: z.number().required(),
   consolidateEveryTurns: z.number().required(),
   sweepEveryTurns: z.number().required(),
 })
@@ -71,6 +86,9 @@ function validate(config: Config): void {
     ['minSequenceLength', config.minSequenceLength],
     ['maxSequenceLength', config.maxSequenceLength],
     ['minSequenceRepeats', config.minSequenceRepeats],
+    ['minStatements', config.minStatements],
+    ['minSubjectLength', config.minSubjectLength],
+    ['maxSubjectLength', config.maxSubjectLength],
     ['consolidateEveryTurns', config.consolidateEveryTurns],
     ['sweepEveryTurns', config.sweepEveryTurns],
   ]
@@ -78,6 +96,11 @@ function validate(config: Config): void {
     if (!Number.isFinite(value) || value < 1) {
       throw new TypeError(`memory-consolidation: ${field} must be at least 1, got ${String(value)}`)
     }
+  }
+  if (config.minSubjectLength > config.maxSubjectLength) {
+    throw new TypeError(
+      `memory-consolidation: minSubjectLength (${config.minSubjectLength}) exceeds maxSubjectLength (${config.maxSubjectLength})`,
+    )
   }
   if (config.minSequenceLength > config.maxSequenceLength) {
     throw new TypeError(
@@ -92,7 +115,7 @@ function validate(config: Config): void {
 }
 
 /**
- * Mount the behavior-cycle distiller and schedule maintenance passes.
+ * Mount both distillers and schedule maintenance passes.
  * @param ctx - registrant context carrying the hub and the session store.
  * @param config - mining thresholds and pass scheduling.
  * @throws when a threshold is unusable; misconfiguration fails at load, not at the first pass.
@@ -100,6 +123,7 @@ function validate(config: Config): void {
 export function apply(ctx: Context, config: Config): void {
   validate(config)
   ctx.effect(() => ctx.memory.registerDistiller(new BehaviorCycleDistiller(BEHAVIOR_CYCLE_RANK, config)))
+  ctx.effect(() => ctx.memory.registerDistiller(new StatedPreferenceDistiller(STATED_PREFERENCE_RANK, config)))
 
   // Turn counts are per session and process-local: they schedule work, they are
   // not state anything reads back, so losing them on restart costs one delayed

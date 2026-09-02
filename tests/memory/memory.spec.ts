@@ -26,6 +26,10 @@ const baseConfig: Config = {
   activationHops: 2,
   activationFalloff: 0.5,
   recordBudget: 100,
+  supportWeight: 0,
+  duplicateThreshold: 1,
+  diversityThreshold: 1,
+  vectorWeight: 1,
 }
 
 const workspace: MemoryScope = { kind: 'workspace', workspace: '/repo' }

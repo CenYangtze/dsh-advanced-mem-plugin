@@ -34,14 +34,39 @@
         activationHops: 2
         activationFalloff: 0.45
         recordBudget: 5000
+        # Frequency emphasis lives in `profile` and `suggest`, not here. Swept on
+        # KylinMem: 0.15 costs 19 points of rank-1 accuracy on a node-dense
+        # corpus and 5 on a sparse one, because the rank curve is flat enough
+        # that a 1.5x multiplier outweighs twenty places of lexical evidence.
+        supportWeight: 0
+        # Above this label overlap, a newly distilled belief reinforces the one
+        # already held instead of sitting beside it as a synonym.
+        duplicateThreshold: 0.8
+        # And above this, a cue is dropped from a recall as a restatement of one
+        # already selected — the budget is small, and spending all of it on one
+        # claim crowds out everything else the turn needed.
+        diversityThreshold: 0.7
+        # No embedder is mounted below, so this is the weight a *real* one would
+        # get. It is deliberately 1: the shipped feature-hash embedder is the
+        # thing that had to be weighed down, not the seam.
+        vectorWeight: 1
 
     - id: memory-store
       name: dsh-advanced-mem-plugin/store-domain
 
-    - id: memory-embedding
-      name: dsh-advanced-mem-plugin/embedding-hash
-      config:
-        dimensions: 512
+    # No embedding row. `embedding-hash` is FNV-1a feature hashing — a random
+    # projection of token hashes with no semantics in it — so its cosine
+    # similarity is a lossier restatement of the term overlap BM25 already has.
+    # Measured on LoCoMo, LongMemEval and both halves of PerLTQA, fusing it at
+    # equal weight cost up to 8.8 points of recall and 0.155 of MRR against not
+    # fusing it at all, and every intermediate weight was worse than zero. Mount
+    # a real embedder here and it gets `vectorWeight` above; mounting the hash
+    # one means lowering that weight first.
+    #
+    #   - id: memory-embedding
+    #     name: dsh-advanced-mem-plugin/embedding-hash
+    #     config:
+    #       dimensions: 512
 
     - id: memory-observer
       name: dsh-advanced-mem-plugin/observer
@@ -68,6 +93,11 @@
         minSequenceLength: 2
         maxSequenceLength: 4
         minSequenceRepeats: 3
+        # A habit needs repeating before it is a belief; a request does not.
+        # The user already said it once, in their own words.
+        minStatements: 1
+        minSubjectLength: 3
+        maxSubjectLength: 60
         consolidateEveryTurns: 5
         sweepEveryTurns: 50
 

@@ -12,6 +12,7 @@
  * @module dsh-advanced-mem-plugin/src/memory-consolidation/distiller
  */
 
+import { recordUseFor } from '../memory/index.ts'
 import type {
   MemoryCandidateEdge,
   MemoryCandidateNode,
@@ -75,17 +76,24 @@ function tally(table: Map<string, ActionTally>, key: string, record: MemoryRecor
 /**
  * The action a record witnessed, or `undefined` when it witnesses none.
  *
- * Tool invocations name their tool in provenance. Skill invocations name their
- * skill when the producer knew it, and otherwise fall back to the first line of
- * the injected body, which is where a skill's own name appears.
+ * Only material the *user* authored can be the subject of a belief. A tool call
+ * is the agent's own action — the user cannot invoke a tool, so "works through
+ * the edit tool" is a fact about the harness, not about the person it works for,
+ * and holding it as a belief about them is a category error. Those records are
+ * still kept, still indexed, and still spread activation; what they may not do
+ * is become the thing memory claims to know.
+ *
+ * A skill invocation is the opposite case and stays: the user typed the skill,
+ * so reaching for one repeatedly is genuinely their habit.
+ *
+ * The test is {@link recordUseFor}, so this rule and the one deciding what may
+ * be quoted back stay a single rule rather than drifting apart — which is
+ * precisely how tool affinities survived the first time it was applied.
  * @param record - the layer-0 record.
  * @returns the action key, prefixed by its kind so a tool and a skill of the same name stay distinct.
  */
 export function actionOf(record: MemoryRecord): string | undefined {
-  if (record.kind === 'tool-invocation') {
-    const tool = record.provenance.tool
-    return tool === undefined ? undefined : `tool:${tool}`
-  }
+  if (recordUseFor(record.kind) !== 'recallable') return undefined
   if (record.kind === 'skill-invocation') {
     const skill = record.provenance.skill ?? record.text.split('\n', 1)[0]?.trim()
     return skill === undefined || skill.length === 0 ? undefined : `skill:${skill}`
@@ -147,6 +155,7 @@ function affinityNodes(
       label: name,
       summary: kind === 'skill'
         ? `Reaches for the ${name} skill; used ${entry.evidence.length} times across ${entry.sessions.size} sessions.`
+        /* v8 ignore next -- actionOf admits skills only; the arm is kept so the mapping stays total */
         : `Works through the ${name} tool; called ${entry.evidence.length} times across ${entry.sessions.size} sessions.`,
       attributes: { uses: entry.evidence.length, sessions: entry.sessions.size },
       confidence: frequencyConfidence(entry.evidence.length, policy),

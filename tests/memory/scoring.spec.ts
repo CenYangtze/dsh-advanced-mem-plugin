@@ -5,6 +5,7 @@ import {
   cosineSimilarity,
   decayedConfidence,
   normalizeVector,
+  rankScore,
   reciprocalRankFusion,
   reinforcedConfidence,
   tokenize,
@@ -141,5 +142,51 @@ describe('belief dynamics', () => {
     expect(clampConfidence(1.5)).toBe(1)
     expect(clampConfidence(-0.2)).toBe(0)
     expect(clampConfidence(Number.NaN)).toBe(0)
+  })
+})
+
+describe('rankScore', () => {
+  it('is the single transform every signal goes through', () => {
+    // The regression this pins: layer-1 cues once used 1/(1+position) while
+    // layer-0 cues came through fusion at 1/(60+position+1), which made a belief
+    // worth sixty episodes at the same rank.
+    const fused = reciprocalRankFusion([['a']], item => item)
+    expect(fused[0]?.score).toBeCloseTo(rankScore(0), 12)
+  })
+
+  it('falls off gently, so rank 1 and rank 20 stay the same order of magnitude', () => {
+    expect(rankScore(0) / rankScore(19)).toBeLessThan(1.5)
+  })
+
+  it('scores an unranked item zero rather than dividing by zero', () => {
+    expect(rankScore(undefined)).toBe(0)
+  })
+})
+
+describe('reciprocalRankFusion weights', () => {
+  it('lets one signal count for less than another', () => {
+    const equal = reciprocalRankFusion([['a'], ['b']], item => item)
+    expect(equal[0]?.score).toBeCloseTo(equal[1]?.score ?? 0, 12)
+
+    const weighted = reciprocalRankFusion([['a'], ['b']], item => item, [1, 0.25])
+    expect(weighted[0]?.item).toBe('a')
+    expect(weighted[1]?.score).toBeCloseTo(0.25 * rankScore(0), 12)
+  })
+
+  it('drops a signal weighed zero, rather than folding it in at nothing', () => {
+    const fused = reciprocalRankFusion([['a'], ['b']], item => item, [1, 0])
+    expect(fused.map(entry => entry.item)).toEqual(['a'])
+  })
+
+  it('treats a missing weight as one, so an unweighted call is unchanged', () => {
+    const partial = reciprocalRankFusion([['a'], ['b']], item => item, [1])
+    expect(partial).toHaveLength(2)
+    expect(partial[0]?.score).toBeCloseTo(partial[1]?.score ?? 0, 12)
+  })
+
+  it('still adds the contributions of a signal that ranks the same item twice over', () => {
+    const fused = reciprocalRankFusion([['a', 'b'], ['a']], item => item, [1, 0.5])
+    expect(fused[0]?.item).toBe('a')
+    expect(fused[0]?.score).toBeCloseTo(rankScore(0) + 0.5 * rankScore(0), 12)
   })
 })
