@@ -76,6 +76,8 @@ export interface StackOptions {
 export class MemoryStack {
   /** Record id → document id, so a cue can be scored against the dataset's labels. */
   private readonly origin = new Map<string, string>()
+  /** Failed-recall tally per record; two strikes retires the lesson. */
+  private readonly strikes = new Map<string, number>()
   /** Document id -> record id, so a forget request can name the thing to drop. */
   private readonly recordOf = new Map<string, string>()
   private readonly scope: MemoryScope = { kind: 'workspace', workspace: '/bench' }
@@ -163,6 +165,63 @@ export class MemoryStack {
    * @param now - clock reading for decay, so a dated corpus ranks reproducibly.
    * @returns the document ids behind the returned cues, best first, deduplicated.
    */
+  /**
+   * Recall and return the cue *text* and id.
+   *
+   * `retrieve` answers with corpus document ids, which is what a benchmark needs
+   * to score which documents came back. An agent asking memory what it knows has
+   * no corpus to look ids up in: it needs the text. The id travels alongside so
+   * the caller can point back at a cue that did not pay off.
+   * @param query - the natural-language cue.
+   * @returns the recalled items, most relevant first.
+   */
+  async retrieveTexts(query: string): Promise<{ id: string; text: string }[]> {
+    const recall = await this.ctx.memory.recall({
+      text: query,
+      scopes: [this.scope],
+      limit: this.options.recallLimit,
+      ...(this.options.includeEvidence ? { includeEvidence: true } : {}),
+    })
+    const out: { id: string; text: string }[] = []
+    const seen = new Set<string>()
+    for (const cue of recall.cues) {
+      const text = cue.kind === 'record'
+        ? cue.record.text
+        : cue.kind === 'node' ? cue.node.label : cue.edge.claim
+      const id = cue.kind === 'record'
+        ? cue.record.id
+        : cue.kind === 'node' ? cue.node.id : cue.edge.id
+      if (text === undefined || text.length === 0 || seen.has(text)) continue
+      seen.add(text)
+      out.push({ id: String(id), text })
+    }
+    return out
+  }
+
+  /**
+   * Retire one recalled item after it has repeatedly failed to help.
+   *
+   * The graded `contradict` refuses layer-0 records — "layer-0 records carry no
+   * belief to adjust" — because confidence lives on layer-1 nodes, and mounting
+   * layer 1 measurably wrecks retrieval on every suite tried so far. So the only
+   * recovery available on the path that actually works is `retract`, which
+   * tombstones a record out of recall while keeping it auditable.
+   *
+   * Two strikes rather than one: a task can fail for reasons that have nothing to
+   * do with the cue it was shown, and one bad episode is not evidence against a
+   * fact. Two is.
+   * @param id - the record id that was recalled and did not pay off.
+   * @returns whether this strike retired the record.
+   */
+  async strikeRecord(id: string): Promise<boolean> {
+    const strikes = (this.strikes.get(id) ?? 0) + 1
+    this.strikes.set(id, strikes)
+    if (strikes < 2) return false
+    await this.ctx.memory.retract(
+      { kind: 'record', id } as Parameters<typeof this.ctx.memory.retract>[0])
+    return true
+  }
+
   async retrieve(query: string, now?: number): Promise<{ documents: string[]; ms: number; semantic: boolean }> {
     const started = performance.now()
     const recall = await this.ctx.memory.recall({
