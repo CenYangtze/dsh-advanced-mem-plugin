@@ -133,6 +133,9 @@ const server = createServer((request, response) => {
           kind: (body['kind'] as 'user-message' | undefined) ?? 'user-message',
           session: String(body['session'] ?? 'osworld'),
           turn: written,
+          // A dated corpus ranks reproducibly only if the record carries its
+          // own clock reading; otherwise every line is "now" and decay is noise.
+          ...(typeof body['at'] === 'number' ? { at: body['at'] } : {}),
         }])
         send(200, { ok: true, records: stack.records })
         return
