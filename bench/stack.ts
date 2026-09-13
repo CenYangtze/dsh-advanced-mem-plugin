@@ -20,7 +20,7 @@ import * as storageSqlite from '@deepseek-ai/dsh-storage-sqlite'
 import * as storageDomain from '@deepseek-ai/dsh-storage-domain'
 import SessionStore, { SessionId } from '@deepseek-ai/dsh-session'
 import MemoryRuntime from '../src/memory/index.ts'
-import type { Config as MemoryConfig, MemoryCue, MemoryScope } from '../src/memory/index.ts'
+import type { Config as MemoryConfig, MemoryCue, MemoryRecord, MemoryScope } from '../src/memory/index.ts'
 import * as storeDomain from '../src/memory-store-domain/index.ts'
 import * as embeddingHash from '../src/memory-embedding-hash/index.ts'
 import { ApiEmbedder } from './embedding-api.ts'
@@ -73,6 +73,41 @@ export interface StackOptions {
 }
 
 /** One corpus loaded into a live stack. */
+/**
+ * Quote a record the way a reader needs it: stamped with when and by whom it
+ * was said, with the question it answered in front of it and the assistant's
+ * confirmation after it. The stamp is added here rather than stored in
+ * the text, so the text the runtime indexes and classifies is what the person
+ * actually said — a date prefix would hide "Actually, ..." from the
+ * correction detector and put a number in front of every term match.
+ * @param record - the recalled record.
+ * @param anchor - the evidence turn the record replies to, if recall found one.
+ * @returns the text to hand the model.
+ */
+function renderRecord(
+  record: MemoryRecord,
+  anchor: MemoryRecord | undefined,
+  confirmation: MemoryRecord | undefined,
+): string {
+  const stamp = (item: MemoryRecord): string => {
+    const role = item.kind === 'assistant-message' ? 'assistant' : item.kind === 'user-message' ? 'user' : item.kind
+    return `[${new Date(item.createdAt).toISOString().slice(0, 16).replace('T', ' ')}] ${role}: `
+  }
+  // A superseded record is quoted without comment. Marking it "(later
+  // corrected)" was measured at -90 checks of 2360: the reader took the mark
+  // as "ignore this" and dropped the numbers the correction acts on. The
+  // link stays on the record for consumers that want it; the dates, which are
+  // always shown, are what let a reader see which instruction is the live one.
+  // Companions share the record's session and sit one turn from it, so they
+  // carry no stamp of their own: a second date on the same line is a cost
+  // with nothing to say.
+  const reply = stamp(record) + record.text
+  const lead = anchor === undefined ? reply : `(asked: ${anchor.text})
+  -> ${reply}`
+  return confirmation === undefined ? lead : `${lead}
+  (confirmed: ${confirmation.text})`
+}
+
 export class MemoryStack {
   /** Record id → document id, so a cue can be scored against the dataset's labels. */
   private readonly origin = new Map<string, string>()
@@ -186,7 +221,7 @@ export class MemoryStack {
     const seen = new Set<string>()
     for (const cue of recall.cues) {
       const text = cue.kind === 'record'
-        ? cue.record.text
+        ? renderRecord(cue.record, cue.anchor, cue.confirmation)
         : cue.kind === 'node' ? cue.node.label : cue.edge.claim
       const id = cue.kind === 'record'
         ? cue.record.id

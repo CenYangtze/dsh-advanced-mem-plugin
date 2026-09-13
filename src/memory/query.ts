@@ -63,6 +63,25 @@ export type MemoryCue =
     readonly kind: 'record'
     /** The retrieved layer-0 record. */
     readonly record: MemoryRecord
+    /**
+     * The turn this record answers, when it is a reply that cannot stand alone.
+     *
+     * "1 to 3, yes" means nothing without the question it ratified. The
+     * question was the assistant's, so it is `evidence`-use and never quoted on
+     * its own; the user's reply is what makes it worth reading, and it travels
+     * here rather than as a cue of its own.
+     */
+    readonly anchor?: MemoryRecord
+    /**
+     * The assistant's restatement of this record, when the user let it stand.
+     *
+     * "Understood - converting to minutes, header 'Duration (min)'" is the
+     * harness's own prose and so never a cue of its own; but said straight
+     * after the instruction and not corrected by the user's next turn, it is
+     * the instruction in its clearest form. It travels with the record it
+     * confirms, never alone.
+     */
+    readonly confirmation?: MemoryRecord
     /** Fused relevance; comparable only within one recall. */
     readonly score: number
     /** Signals that placed this cue. */

@@ -28,11 +28,14 @@ import {
   clampConfidence,
   cosineSimilarity,
   decayedConfidence,
+  isCorrection,
   rankScore,
   reciprocalRankFusion,
   reinforcedConfidence,
   similarity,
+  splitCue,
   tokenize,
+  topicTerms,
   weakenedConfidence,
 } from './scoring.ts'
 import type { ScoredItem } from './scoring.ts'
@@ -262,6 +265,30 @@ export interface Config {
    * provider.
    */
   vectorWeight: number
+}
+
+/**
+ * Merge rankings by seat: every list's first, then every list's second, and so
+ * on, keeping the first appearance of each item.
+ * @param rankings - the lists, in priority order for ties at the same seat.
+ * @param identify - the identity an item is deduplicated on.
+ * @returns one list in which each source's top entry sits ahead of any source's next.
+ */
+function interleave<T>(rankings: readonly (readonly T[])[], identify: (item: T) => string): T[] {
+  const out: T[] = []
+  const seen = new Set<string>()
+  const longest = Math.max(0, ...rankings.map(ranking => ranking.length))
+  for (let seat = 0; seat < longest; seat += 1) {
+    for (const ranking of rankings) {
+      const item = ranking[seat]
+      if (item === undefined) continue
+      const key = identify(item)
+      if (seen.has(key)) continue
+      seen.add(key)
+      out.push(item)
+    }
+  }
+  return out
 }
 
 /** Empty accumulated support for a layer-1 item created from one observation moment. */
@@ -526,7 +553,43 @@ export class MemoryRuntime extends Service {
     }
     await this.store.putRecord(record)
     this.ctx.emit('memory/recorded', record)
+    if (record.use === 'recallable' && isCorrection(text)) await this.linkCorrection(record)
     return record
+  }
+
+  /**
+   * Point the message a correction overrides at the correction.
+   *
+   * The signal is deliberately narrow: the new message must open as a
+   * correction, and the candidate must be the most recent earlier quotable
+   * message in the scope that shares at least two topical terms with it. That
+   * is enough to pair "track duration as a plain number" with "actually, switch
+   * duration to minutes", and not enough to pair it with anything that merely
+   * mentions the file. A miss costs nothing — recall still orders by date; a
+   * false link only mislabels, never hides.
+   * @param correction - the record just written.
+   */
+  private async linkCorrection(correction: MemoryRecord): Promise<void> {
+    const topic = topicTerms(correction.terms)
+    if (topic.size < 2) return
+    let best: MemoryRecord | undefined
+    let bestShared = 0
+    for (const candidate of this.store.records([correction.scope])) {
+      if (candidate.id === correction.id || candidate.status !== 'active') continue
+      if (candidate.use !== 'recallable' || candidate.createdAt > correction.createdAt) continue
+      if (candidate.supersededBy !== undefined) continue
+      let shared = 0
+      for (const term of topicTerms(candidate.terms)) if (topic.has(term)) shared += 1
+      if (shared < 2) continue
+      if (shared > bestShared || (shared === bestShared && best !== undefined && candidate.createdAt > best.createdAt)) {
+        best = candidate
+        bestShared = shared
+      }
+    }
+    if (best === undefined) return
+    const superseded: MemoryRecord = { ...best, supersededBy: correction.id }
+    await this.store.putRecord(superseded)
+    this.ctx.emit('memory/recorded', superseded)
   }
 
   /**
@@ -691,7 +754,20 @@ export class MemoryRuntime extends Service {
       terms: tokenize(`${node.label} ${node.summary}`),
     })))
     const lexicalEdges = bm25Rank(terms, edges.map(edge => ({ item: edge, terms: tokenize(edge.claim) })))
-    const lexicalRecords = bm25Rank(terms, records.map(record => ({ item: record, terms: record.terms })))
+    const lexicalDocuments = records.map(record => ({ item: record, terms: record.terms }))
+    const wholeLexical = bm25Rank(terms, lexicalDocuments)
+    // A multi-part cue is served part by part: each part's best record takes a
+    // seat before any part's second, so the part with the fewest distinctive
+    // terms is not starved by the one with the most. Rank fusion would not do
+    // this — a topic that dominates two lists outscores the single best answer
+    // to a third — so the lists are interleaved, whole first, and the fused
+    // score below follows from the seat.
+    const partRankings = splitCue(query.text)
+      .map(part => bm25Rank(tokenize(part), lexicalDocuments))
+      .filter(ranking => ranking.length > 0)
+    const lexicalRecords = partRankings.length === 0
+      ? wholeLexical
+      : interleave([wholeLexical, ...partRankings], entry => entry.item.id)
 
     const vectorRecords = await this.vectorRank(query, records)
     const fusedRecords = reciprocalRankFusion<MemoryRecord>(
@@ -699,6 +775,10 @@ export class MemoryRuntime extends Service {
       record => record.id,
       [1, this.config.vectorWeight],
     )
+    // With evidence quoted outright, an anchor would print the same turn twice.
+    const { anchors, confirmations } = query.includeEvidence === true
+      ? { anchors: new Map<MemoryRecordId, MemoryRecord>(), confirmations: new Map<MemoryRecordId, MemoryRecord>() }
+      : this.companionsFor(records)
     const activation = this.spreadActivation(lexicalNodes, fusedRecords, edges, nodeById)
 
     const lexicalNodePositions = rankPositions(lexicalNodes, node => node.id)
@@ -768,7 +848,21 @@ export class MemoryRuntime extends Service {
       // an old episode is not wrong, only less likely to be what was meant.
       const recency = decayedConfidence(1, this.config.inferredHalfLifeMs, record.createdAt, now)
       signals.push({ kind: 'recency', value: recency })
-      cues.push({ kind: 'record', record, score: fused.score * (0.5 + 0.5 * recency), signals })
+      // A corrected instruction ranks on relevance like any other: it is marked,
+      // not demoted. Demoting it was measured and it cost more than it saved —
+      // the message a correction overrides usually carries the data the
+      // correction acts on ("track it in hours: 3.6, 3.5" -> "actually, in
+      // minutes"), and a reader handed only the correction cannot apply it.
+      const anchor = anchors.get(record.id)
+      const confirmation = confirmations.get(record.id)
+      cues.push({
+        kind: 'record',
+        record,
+        ...(anchor === undefined ? {} : { anchor }),
+        ...(confirmation === undefined ? {} : { confirmation }),
+        score: fused.score * (0.5 + 0.5 * recency),
+        signals,
+      })
     }
 
     cues.sort((left, right) => right.score - left.score)
@@ -1157,6 +1251,64 @@ export class MemoryRuntime extends Service {
    * @param limit - how many to return.
    * @returns the selected cues, still in score order.
    */
+  /**
+   * Pair each quotable record with the evidence turns that give it its meaning.
+   *
+   * Two pairings, both within one session and both one turn apart:
+   *
+   *   anchor        the assistant turn *before* a reply that cannot stand alone
+   *                 — a question, or anything a user answered in under a dozen
+   *                 terms. "1 to 3, yes" needs "so values run 1 to 3 from now on?".
+   *   confirmation  the assistant turn *after* an instruction, when it is short,
+   *                 is not a question, and the user's next turn did not correct
+   *                 it. "Understood - converting to minutes, header 'Duration
+   *                 (min)'" restates the instruction more plainly than the
+   *                 instruction did, and the user's silence ratified it.
+   *
+   * Neither turn is ever a cue on its own: that is the self-quotation the use
+   * split exists to prevent. Attached to the user's words they are context,
+   * not claims.
+   * @param records - the candidate records of this recall.
+   * @returns the companions of each record that has any, by record id.
+   */
+  private companionsFor(records: readonly MemoryRecord[]): {
+    anchors: Map<MemoryRecordId, MemoryRecord>
+    confirmations: Map<MemoryRecordId, MemoryRecord>
+  } {
+    const bySession = new Map<string, Map<number, MemoryRecord>>()
+    for (const record of records) {
+      const { sessionId, turn } = record.provenance
+      if (sessionId === undefined || turn === undefined) continue
+      let turns = bySession.get(sessionId)
+      if (turns === undefined) {
+        turns = new Map()
+        bySession.set(sessionId, turns)
+      }
+      turns.set(turn, record)
+    }
+    const anchors = new Map<MemoryRecordId, MemoryRecord>()
+    const confirmations = new Map<MemoryRecordId, MemoryRecord>()
+    for (const record of records) {
+      if (record.use !== 'recallable') continue
+      const { sessionId, turn } = record.provenance
+      if (sessionId === undefined || turn === undefined) continue
+      const turns = bySession.get(sessionId)
+      const previous = turns?.get(turn - 1)
+      if (previous !== undefined && previous.use === 'evidence'
+        && (previous.text.trimEnd().endsWith('?') || record.terms.length < 12)) {
+        anchors.set(record.id, previous)
+      }
+      const next = turns?.get(turn + 1)
+      const afterNext = turns?.get(turn + 2)
+      if (next !== undefined && next.use === 'evidence' && next.terms.length <= 30
+        && !next.text.trimEnd().endsWith('?')
+        && (afterNext === undefined || !isCorrection(afterNext.text))) {
+        confirmations.set(record.id, next)
+      }
+    }
+    return { anchors, confirmations }
+  }
+
   private diversify(cues: readonly MemoryCue[], limit: number): MemoryCue[] {
     if (this.config.diversityThreshold >= 1) return cues.slice(0, limit)
     const selected: MemoryCue[] = []

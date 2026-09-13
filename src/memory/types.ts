@@ -273,6 +273,18 @@ export interface MemoryRecord {
   readonly promotedTo: readonly string[]
   /** A `retracted` record stays on the medium for audit but never reaches recall. */
   readonly status: 'active' | 'retracted'
+  /**
+   * A later record that corrected this one, when capture could tell.
+   *
+   * Set by {@link MemoryService.remember} when a user message opens as a
+   * correction ("actually, switch it to minutes") and shares its topic with an
+   * earlier message in the scope. The record stays recallable and ranks on
+   * relevance as before — a superseded decision is still what was said, and
+   * often holds the data its correction acts on — but it is marked when quoted,
+   * so the reader does not have to work out from dates alone which of two
+   * conflicting instructions is the live one.
+   */
+  readonly supersededBy?: MemoryRecordId
 }
 
 /**

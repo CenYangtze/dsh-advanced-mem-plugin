@@ -44,6 +44,28 @@ const CJK_RUN = /[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af]+/gu
 const WORD_RUN = /[\p{Letter}\p{Number}_]+/gu
 
 /**
+ * Fold the common English inflections onto one key.
+ *
+ * "ranking", "ranked" and "rank" are one topic, and a term index that keeps
+ * them apart cannot match a request phrased one way to an instruction phrased
+ * another — which is exactly the situation a memory is asked about, since a
+ * user rarely repeats their own wording. This strips only the three suffixes
+ * whose removal is safe without a dictionary, and only from words long enough
+ * that the remainder is still a word; the stem is applied to queries and
+ * documents alike, so it can only ever join keys, never split them. Words that
+ * are not Latin letters pass through untouched.
+ * @param term - one lowercased term.
+ * @returns the term with its inflection folded.
+ */
+function stem(term: string): string {
+  if (!/^[a-z]+$/u.test(term)) return term
+  if (term.length > 5 && term.endsWith('ing')) return term.slice(0, -3)
+  if (term.length > 4 && term.endsWith('ed')) return term.slice(0, -2)
+  if (term.length > 3 && term.endsWith('s') && !term.endsWith('ss')) return term.slice(0, -1)
+  return term
+}
+
+/**
  * Split text into lexical retrieval keys.
  *
  * Every run of letters, digits, and underscores becomes one lowercased term,
@@ -61,7 +83,7 @@ export function tokenize(text: string): string[] {
     if (term.length === 0) return
     terms.push(term)
   }
-  for (const match of text.toLowerCase().matchAll(WORD_RUN)) push(match[0])
+  for (const match of text.toLowerCase().matchAll(WORD_RUN)) push(stem(match[0]))
   for (const match of text.matchAll(CJK_RUN)) {
     const run = match[0]
     // A one-character run is already the whole word token from the pass above;
@@ -299,4 +321,61 @@ export function weakenedConfidence(confidence: number, rate: number): number {
 export function clampConfidence(value: number): number {
   if (Number.isNaN(value)) return 0
   return Math.min(1, Math.max(0, value))
+}
+
+/** One line of a multi-part request that starts a fresh item. */
+const CUE_ITEM = /^\s*(?:\d+[.)]|[-*•])\s*/u
+
+/**
+ * Break a multi-part cue into the parts a recall should serve separately.
+ *
+ * A request like "1. apply the ranking 2. enter the units 3. line up the slots"
+ * is three questions, and one BM25 pass over the whole of it answers the one
+ * with the most repeated terms and starves the others. Each numbered or
+ * bulleted line becomes its own cue; a heading or a line too short to carry a
+ * topic stays part of the whole only. A cue with fewer than two such lines
+ * comes back empty, so the common single-question case costs nothing.
+ * @param text - the cue as the caller wrote it.
+ * @returns the parts worth ranking on their own, excluding the whole.
+ */
+export function splitCue(text: string): string[] {
+  const parts: string[] = []
+  for (const raw of text.split(/\r?\n/u)) {
+    if (!CUE_ITEM.test(raw)) continue
+    const line = raw.replace(CUE_ITEM, '').trim()
+    if (tokenize(line).length < 3) continue
+    parts.push(line)
+  }
+  return parts.length > 1 ? parts : []
+}
+
+/** Openers that announce a change to something said before. */
+const CORRECTION = /^\s*(?:(?:actually|nope|wait|correction|instead|scratch that|change of plan|on second thought|forget (?:that|what i said))\b|no[,.!-]\s)/iu
+/** Terms too common to say what a correction is about. */
+const CORRECTION_STOP = new Set([
+  'a', 'an', 'the', 'to', 'of', 'in', 'on', 'for', 'and', 'or', 'it', 'is', 'be', 'as', 'at', 'by',
+  'we', 'i', 'you', 'that', 'this', 'now', 'not', 'no', 'so', 'just', 'with', 'from', 'actually',
+  'instead', 'should', 'would', 'will', 'can', 'do', 'did', 'does', 'have', 'has', 'had', 'but',
+  'if', 'then', 'than', 'all', 'any', 'one', 'too', 'also', 'still', 'again', 'rather', 'plain',
+  'change', 'changed', 'switch', 'flip', 'reverse', 'use', 'keep', 'make', 'put', 'get', 'go',
+])
+
+/**
+ * Whether a message reads as a correction of something earlier.
+ * @param text - the message.
+ * @returns true when it opens with a correction marker.
+ */
+export function isCorrection(text: string): boolean {
+  return CORRECTION.test(text)
+}
+
+/**
+ * The terms that say what a message is about, for matching a correction to
+ * what it corrects. Function words and the correction vocabulary itself are
+ * dropped, so "actually, switch it to minutes instead" leaves `minutes`.
+ * @param terms - indexed terms of the message.
+ * @returns the topical terms, deduplicated.
+ */
+export function topicTerms(terms: readonly string[]): Set<string> {
+  return new Set(terms.filter(term => term.length > 1 && !CORRECTION_STOP.has(term)))
 }

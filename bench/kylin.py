@@ -188,7 +188,7 @@ def recall_queries(item):
     return out
 
 
-def memory_cues(item, mem, limit):
+def memory_cues(item, mem, limit, single=False, stamp=False):
     """Ingest the history, then recall; the store is reset per item."""
     post(mem + "/reset", {})
     turn = 0
@@ -197,24 +197,34 @@ def memory_cues(item, mem, limit):
             turn += 1
             stamp = ev.get("t") or session.get("date", "")
             try:
-                at = int(dt.datetime.fromisoformat(stamp).timestamp() * 1000)
+                # Naive dataset clock -> UTC, so the bridge's stamp reads back
+                # as the same wall time the dataset wrote.
+                at = int(dt.datetime.fromisoformat(stamp).replace(tzinfo=dt.timezone.utc).timestamp() * 1000)
             except ValueError:
                 at = None
-            body = {"id": "%s-%d" % (item["id"], turn), "text": event_text(session, ev),
+            # Raw words only: the bridge stamps date and role on the way out, so
+            # what the runtime indexes is what was said, not a log line.
+            body = {"id": "%s-%d" % (item["id"], turn),
+                    "text": event_text(session, ev) if stamp else ev["text"],
                     "kind": "user-message" if ev["role"] == "user" else "assistant-message",
                     "session": session["session"]}
             if at is not None:
                 body["at"] = at
             post(mem + "/remember", body)
     seen, cues = set(), []
-    for q in recall_queries(item):
+    for q in ([item["task"]] if single else recall_queries(item)):
         for text in post(mem + "/recall", {"text": q}).get("cues", []):
             if text not in seen:
                 seen.add(text)
                 cues.append(text)
     # Present in time order: the prompt tells the model the later decision wins,
     # and that is only checkable if it can see which one is later.
-    cues.sort(key=lambda c: c[:17])
+    def when(cue):
+        """The record's own stamp: the reply line of an anchored cue, not the question's."""
+        lines = [l.strip() for l in cue.split(chr(10))]
+        own = [l for l in lines if l.startswith("-> ")] or [lines[0]]
+        return own[0].lstrip("-> ")[:17]
+    cues.sort(key=when)
     return cues[:limit]
 
 # ------------------------------------------------------------------ main
@@ -228,6 +238,14 @@ def main():
     ap.add_argument("--model", default=os.environ.get("QA_MODEL", "alibaba/qwen3.5-27b"))
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--cue-limit", type=int, default=16)
+    ap.add_argument("--strip-marks", action="store_true",
+                    help="drop the bridge's '(later corrected)' marks, to price them")
+    ap.add_argument("--stamp-on-ingest", action="store_true",
+                    help="write '[date] role: ' into the stored text, for a bridge that "
+                         "does not stamp cues itself")
+    ap.add_argument("--single-query", action="store_true",
+                    help="ask memory once with the whole request, as an agent that does "
+                         "not decompose would; prices the runtime's own cue splitting")
     ap.add_argument("--workers", type=int, default=6)
     ap.add_argument("--out", required=True)
     a = ap.parse_args()
@@ -244,7 +262,9 @@ def main():
         cues = []
         if arm == "memory":
             with lock:
-                cues = memory_cues(item, mem, a.cue_limit)
+                cues = memory_cues(item, mem, a.cue_limit, a.single_query, a.stamp_on_ingest)
+            if a.strip_marks:
+                cues = [c.replace(" (later corrected)", "") for c in cues]
         reply = chat(a.model, build_messages(item, arm, cues))
         table = parse_table(reply)
         passed, total, per = score(item, table)
