@@ -280,9 +280,9 @@ export interface MemoryRecord {
    * correction ("actually, switch it to minutes") and shares its topic with an
    * earlier message in the scope. The record stays recallable and ranks on
    * relevance as before — a superseded decision is still what was said, and
-   * often holds the data its correction acts on — but it is marked when quoted,
-   * so the reader does not have to work out from dates alone which of two
-   * conflicting instructions is the live one.
+   * often holds the data its correction acts on — and it carries the link, so
+   * a consumer that wants to can tell which of two conflicting instructions is
+   * the live one without working it out from dates alone.
    */
   readonly supersededBy?: MemoryRecordId
 }
