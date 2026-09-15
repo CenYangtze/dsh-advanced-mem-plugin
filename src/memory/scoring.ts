@@ -350,7 +350,11 @@ export function splitCue(text: string): string[] {
 }
 
 /** Openers that announce a change to something said before. */
-const CORRECTION = /^\s*(?:(?:actually|nope|wait|correction|instead|scratch that|change of plan|on second thought|forget (?:that|what i said))\b|no[,.!-]\s)/iu
+const CORRECTION_OPENERS = [
+  'actually', 'nope', 'wait', 'correction', 'instead', 'scratch that', 'change of plan',
+  'on second thought', 'forget (?:that|what i said)',
+]
+const CORRECTION = new RegExp(`^\\s*(?:(?:${CORRECTION_OPENERS.join('|')})\\b|no[,.!-]\\s)`, 'iu')
 /** Terms too common to say what a correction is about. */
 const CORRECTION_STOP = new Set([
   'a', 'an', 'the', 'to', 'of', 'in', 'on', 'for', 'and', 'or', 'it', 'is', 'be', 'as', 'at', 'by',
