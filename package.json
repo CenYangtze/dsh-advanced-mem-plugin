@@ -1,7 +1,7 @@
 {
   "name": "dsh-advanced-mem-plugin",
-  "version": "0.1.0",
-  "description": "Advanced dual-layer agent memory for the DeepSeek Harness: episodic substrate, semantic graph, passive behaviour-cycle capture, and a model-facing memory protocol",
+  "version": "0.2.0",
+  "description": "Factual and experience memory for DeepSeek Harness, with outcome-grounded skills, lifecycle management and API benchmark adapters",
   "keywords": [
     "deepseek-harness",
     "dsh-bundle",
@@ -55,6 +55,26 @@
       "types": "./lib/command-memory/index.d.ts",
       "default": "./lib/command-memory/index.js"
     },
+    "./experience": {
+      "types": "./lib/experience/index.d.ts",
+      "default": "./lib/experience/index.js"
+    },
+    "./experience/api": {
+      "types": "./lib/experience/api.d.ts",
+      "default": "./lib/experience/api.js"
+    },
+    "./experience-store-domain": {
+      "types": "./lib/experience-store-domain/index.d.ts",
+      "default": "./lib/experience-store-domain/index.js"
+    },
+    "./experience-harness": {
+      "types": "./lib/experience-harness/index.d.ts",
+      "default": "./lib/experience-harness/index.js"
+    },
+    "./evaluation": {
+      "types": "./lib/evaluation/index.d.ts",
+      "default": "./lib/evaluation/index.js"
+    },
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./package.json": "./package.json"
   },
@@ -64,6 +84,8 @@
     "cordis.patch.yml",
     "README.md",
     "README.zh.md",
+    "docs/**/*.md",
+    "src/evaluation/*.py",
     "LICENSE"
   ],
   "dsh": {
@@ -89,18 +111,13 @@
     "@deepseek-ai/dsh-agent": "*",
     "@deepseek-ai/dsh-brand": "*",
     "@deepseek-ai/dsh-commands": "*",
-    "@deepseek-ai/dsh-invariants": "*",
     "@deepseek-ai/dsh-llm": "*",
     "@deepseek-ai/dsh-session": "*",
     "@deepseek-ai/dsh-storage-domain": "*",
     "@deepseek-ai/dsh-system-prompt": "*",
     "@deepseek-ai/dsh-tools": "*",
+    "@deepseek-ai/dsh-util-values": "*",
     "@deepseek-ai/schemastery": "*"
-  },
-  "peerDependenciesMeta": {
-    "@deepseek-ai/dsh-invariants": {
-      "optional": true
-    }
   },
   "devDependencies": {
     "@types/node": "^22.20.0",

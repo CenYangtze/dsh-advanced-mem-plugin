@@ -85,6 +85,7 @@ describe('statable', () => {
   it('admits what the user wrote and refuses what the harness produced', () => {
     expect(statable(record('hello'))).toBe(true)
     expect(statable(record('a note', { kind: 'note' }))).toBe(true)
+    expect(statable(record('I prefer pnpm', { kind: 'note', use: 'evidence' }))).toBe(false)
     expect(statable(record('I prefer bash', { kind: 'assistant-message', use: 'evidence' }))).toBe(false)
     expect(statable(record('bash — ls', { kind: 'tool-invocation', use: 'evidence' }))).toBe(false)
   })

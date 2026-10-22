@@ -2,233 +2,156 @@
 
 English | [中文](README.zh.md)
 
-Cross-session memory for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness), packaged as an installable **bundle**. Drop it into any profile with `dsh plugin add` — no fork, no patch to the harness itself.
+Cross-session **factual and experience memory** for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness), distributed as an installable Cordis bundle. It preserves user knowledge, learns reusable procedures from completed tasks, and brings the appropriate memory into the next task. The same experience engine and evaluation interfaces are available as TypeScript APIs.
 
-The agent remembers the person it works with: what they prefer, what they have ruled out, which tools and skills they reach for, and which sequences of steps they repeat. Those conclusions come back automatically at the start of a turn, and the agent can also search, write, and forget them deliberately through three tools.
-
-```
-┌─ layer 1 ── semantic graph ──────────────────────────────────────────┐
-│  nodes: person · preference · constraint · project · entity ·        │
-│         routine · tool-affinity · skill-affinity · procedure         │
-│  edges: the conclusion an event induced between two nodes            │
-└──────────────────────────┬───────────────────────────────────────────┘
-                           │ every node and edge cites its evidence
-┌──────────────────────────┴─── layer 0 ── episodic substrate ─────────┐
-│  records: user turns, tool calls, skill invocations, artifacts       │
-│  each with lexical terms, an optional dense vector, provenance back  │
-│  into the session log, and attachment URIs for images/video/docs     │
-└──────────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart LR
+  L[Committed session log] --> F[Factual records and graph]
+  L --> E[Task episodes and outcomes]
+  E --> D[API experience extraction]
+  D --> S[Versioned procedure and pitfall skills]
+  F --> FR[Factual recall]
+  S --> ER[Environment and tool matched recall]
+  FR --> T[Next agent turn]
+  ER --> T
+  V[Evaluator or user confirmation] --> E
+  T --> V
 ```
 
-Design rationale — why two layers, why decay is applied at read time, why fusion is by rank — is in [docs/design.md](docs/design.md) ([中文](docs/design.zh.md)).
+The factual channel remembers what is known about the user and workspace. The experience channel remembers how to complete a class of tasks, under which conditions, and how to check the result. Separate storage, provenance rules and recall budgets keep these meanings distinct.
 
-## Requirements
+## Compatibility and installation
 
-- A DeepSeek Harness installation with the `dsh` CLI on `PATH`.
-- A profile whose bundle list includes `@deepseek-ai/dsh-web-app`. That bundle mounts `ctx.storage.domain`, which the durable store needs. The shipped `web` and `headless` profiles both stack it.
-- Node 22 or newer.
-
-Without a store the stack still loads: `ctx.memory.ready` stays false, capture and recall skip silently, and the three tools fail loud rather than pretending to remember. That is degradation, not breakage — but you get no memory.
-
-## Install
+The supported integration targets **DeepSeek Harness `dsh-v0.2.1-rc.2`**, official commit [`687f282e`](https://github.com/deepseek-ai/deepseek-harness/commit/687f282e8625c6b8d11ff58211a90524be2e4317). See the [compatibility report](docs/compatibility.md) for the verified API changes and checks. Use the Node version required by that Harness release and a profile mounting `storageDomain`, sessions, agents, tools and commands.
 
 ```sh
-dsh plugin --profile web add github:CenYangtze/dsh-advanced-mem-plugin
+dsh plugin --profile web add github:CenYangtze/dsh-advanced-mem-plugin#<commit>
+dsh --profile web --dump-config
+dsh --profile web
 ```
 
-A git install fetches **sources, not built artifacts**, so pnpm must run this package's `prepare` script to produce `lib/`. pnpm ≥10 refuses to do that until you allow it by name, so the first `add` fails and prints the key to allow. Add it to the profile's `pnpm-workspace.yaml` (`$DSH_HOME/profiles/web/pnpm-workspace.yaml`):
+Git installation builds `lib/` with the package's `prepare` script. If pnpm requests build approval, add the package to the profile's `pnpm-workspace.yaml`, then repeat installation:
 
 ```yaml
 allowBuilds:
   dsh-advanced-mem-plugin: true
 ```
 
-then re-run the `add`. Pin a commit so a later push cannot silently change what runs on your machine:
+A prebuilt package can also be installed:
 
 ```sh
-dsh plugin --profile web add github:CenYangtze/dsh-advanced-mem-plugin#<sha>
+pnpm run build
+pnpm pack
+dsh plugin --profile web add ./dsh-advanced-mem-plugin-0.2.0.tgz
 ```
 
-That allowance is what it sounds like — permission to execute this package's build script on your machine at install time, outside any sandbox the agent runs under. Read the source first, or install a prebuilt tarball instead:
+The shipped patch mounts ten plugin rows. The feature-hash embedding provider is available as an optional entry point; the default factual retrieval uses lexical ranking and graph activation. All Harness packages remain peers and are resolved from the host installation.
+
+## Use factual memory
+
+Factual capture reads committed session events. Direct user messages and explicitly invoked skills can support beliefs about the user; assistant output and tool invocations remain evidence and are excluded from ordinary recall and user-preference mining.
+
+- `memory_search`: retrieve factual knowledge in the current scope chain.
+- `memory_write`: record a note or supported belief.
+- `memory_forget` with `mode: "erase"`: erase source records and propagate deletion to dependent experience; the default `retract` mode retains history.
+- `/memory`, `/memory search <query>`, `/memory stats`: inspect the factual channel.
+- `/memory forget <label>`: retract a named belief, preserving its audit history.
+
+The semantic graph keeps source-record citations, confidence, support, decay and supersession. BM25, optional embeddings and graph activation share the same reciprocal-rank transform. Automatic factual recall is appended once per turn and preserves the Harness request-series boundary.
+
+## Learn and use experience
+
+Configure an OpenAI-compatible **chat/completions endpoint** before starting Harness. The URL includes the complete API path; any provider implementing this protocol can be used.
 
 ```sh
-pnpm pack                                    # in a clone of this repo
-dsh plugin --profile web add ./dsh-advanced-mem-plugin-0.1.0.tgz
-```
-
-### Verify
-
-```sh
-dsh --profile web --dump-config    # shows a "# == dsh-advanced-mem-plugin" layer with 8 rows
+export DSH_EXPERIENCE_ENDPOINT=https://your-provider.example/v1/chat/completions
+export DSH_EXPERIENCE_MODEL=your-model
+export DSH_EXPERIENCE_API_KEY=your-api-key
 dsh --profile web
 ```
 
-`dsh plugin --profile web remove dsh-advanced-mem-plugin` removes the dependency and the layer together.
+PowerShell uses `$env:DSH_EXPERIENCE_ENDPOINT`, `$env:DSH_EXPERIENCE_MODEL` and `$env:DSH_EXPERIENCE_API_KEY` for these variables. A local unauthenticated API may leave the key empty. Without an extraction endpoint, task capture and existing-skill recall remain available.
 
-## What's in the bundle
+The observer captures bounded visible actions and results, including nested PTC dispatches. It retains no raw tool arguments or hidden reasoning. A completed Harness turn has an **unknown task outcome**. An application evaluator can submit a verified task via `experience/task-completed`; a person can confirm a captured task:
 
-Eight plugins, one per role, ordered as the data flows. The `id` column is what you target from your own patch layer; the `name` column is the module the row loads.
-
-| id | name | Role |
-|---|---|---|
-| `memory` | `dsh-advanced-mem-plugin` | **Service Definition** — `ctx.memory`: vocabulary, provider registries, retrieval, belief update laws. No IO, no model. |
-| `memory-store` | `…/store-domain` | **Service Provider** — durable store over `ctx.storage.domain`. |
-| `memory-embedding` | `…/embedding-hash` | **Service Provider** — keyless deterministic embedder (signed feature hashing). No network, no API key. |
-| `memory-observer` | `…/observer` | **Passive capture** — reads the append-only `session/event` log. |
-| `memory-consolidation` | `…/consolidation` | **Service Provider + scheduler** — mines behaviour cycles into graph nodes; runs maintenance sweeps. |
-| `memory-recall` | `…/recall` | **Consumer** — retrieves and injects relevant memory once per turn on `agent/pre-step`. |
-| `tool-memory` | `…/tool` | **Consumer** — three model-facing tools plus the memory protocol prompt section. |
-| `command-memory` | `…/command` | **Consumer** — the `/memory` command, the one surface addressed to the person rather than the model. |
-
-### The loop, in three parts
-
-**Passive.** The observer captures user turns and tool/skill invocations from the session log — it never intercepts the agent loop, so it cannot change what the model sees, and a failing store degrades memory instead of stalling a turn. Every few turns the consolidator mines what accumulated: an action used often enough becomes a `tool-affinity` or `skill-affinity` node; a sequence of actions repeated within turns becomes a `procedure` node. This is the *"the user keeps reaching for this skill, so try it next time"* path, and it uses **no model** — frequency, recurrence, and adjacency are the whole of its reasoning, which makes it cheap, deterministic, and impossible to hallucinate with.
-
-**Active.** `memory_search`, `memory_write`, and `memory_forget`, plus a fixed prompt section that names the situations which should trigger a deliberate search — tools this general are reliably ignored without one. The section also carries the calibration rule the whole design rests on: **recalled memory is a prior, not an instruction.**
-
-| Tool | Purpose |
-|---|---|
-| `memory_search` | Query the graph and the episodic substrate with a natural-language cue. |
-| `memory_write` | Create or reinforce a belief, optionally linking it to an existing one. |
-| `memory_forget` | Retract a belief, or erase the material behind it. |
-
-`memory_write` accepts only the subject types a model can honestly assert — `preference`, `constraint`, `project`, `entity`, `routine`, `person`. The affinity and procedure types are withheld: those are evidence of observed behaviour, and letting a model assert them would dress its own guesses up as usage counts.
-
-**Yours.** `/memory` answers the two questions the model-facing halves cannot: *what do you think you know about me*, and *how do I make you stop*.
-
-| Line | What it does |
-|---|---|
-| `/memory` | What memory believes, with confidence and origin on every line, then what it suggests picking up. |
-| `/memory search <query>` | The same hybrid retrieval automatic recall uses. |
-| `/memory stats` | Counts by layer and node type, and how much material is evidence-only. |
-| `/memory forget <label>` | Retract every active belief carrying that label. |
-
-Suggestions come from `ctx.memory.suggest()`, which admits only `project`, `routine`, and `procedure` nodes — a preference says *how* to work, not *what* to work on. When memory holds none of those, the command says so rather than padding the list.
-
-## Configuration
-
-Every tunable is a **required** config field. The right half-life for a preference depends on how your deployment is used, so a default here would be an unsupported choice rather than a convenience. The bundle's own [`cordis.patch.yml`](cordis.patch.yml) states a complete working set; override any row from your profile's patch layer at `$DSH_HOME/profiles/web/cordis.patch.yml`:
-
-```yaml
-- id: memory
-  config:
-    recallLimit: 12
-    profileLimit: 12
-    inferredConfidence: 0.4
-    assertedConfidence: 0.9
-    inferredHalfLifeMs: 5184000000   # an unreinforced inference halves in 60 days
-    assertedHalfLifeMs: 0            # 0 = never erodes: the user said it
-    reinforcementRate: 0.25
-    contradictionRate: 0.5
-    retirementFloor: 0.05
-    activationHops: 2
-    activationFalloff: 0.45
-    recordBudget: 5000
+```text
+/experience list
+/experience confirm <episode-id> success
+/experience learn
+/experience show <skill-id>
+/experience export <skill-id>
+/experience retract <skill-id>
+/experience forget episode <episode-id>
+/experience forget skill <skill-id>
+/experience forget all
+/experience maintain
 ```
 
-A patch replaces a row's **entire** `config` rather than deep-merging keys, so restate every field, not just the one you are changing.
+Extraction produces structured procedures and pitfalls: applicability, preconditions, ordered steps, cautions, verification, required tools, environment constraints and source episodes. Active skills must meet the configured confidence and independently supported outcome thresholds. Model-generated success claims alone do not activate a skill.
 
-Two knobs worth understanding before you touch the rest:
+Recall selects active, unexpired skills matching the current task, exact environment constraints and the agent's available tools. It adds a separate experience block once per turn. Recalled procedures guide planning; the host's current instructions, tool permissions and approval policies continue to govern execution. Markdown export provides a portable skill document without installing or executing it.
 
-- **`assertedHalfLifeMs: 0`** is how "never decays" is spelled in configuration. What the user stated outright does not erode and is never swept; only the user unsays it. Everything inferred halves on `inferredHalfLifeMs`.
-- **`recordBudget`** bounds retrieval cost. Recall materializes and ranks the requested scope chain in process, so this is load-bearing rather than advisory. A deployment far past it wants a store provider with a real index — the seam permits one; this package does not ship one.
+## Lifecycle and deployment policy
 
-To capture assistant messages too, or to keep a noisy tool out of the substrate:
+| Operation | Persistent behavior |
+|---|---|
+| Deduplicate | Merge new supporting episodes into an equivalent procedure; repeated extraction adds no extra vote. |
+| Validate | Record evaluator or user confirmation as an immutable episode; retain the earlier outcome. |
+| Apply feedback | Accept feedback from a later independent task; update confidence and isolate repeatedly harmful skills. |
+| Replace | Activate an evidence-backed successor and retain the predecessor and version history. |
+| Expire | Filter expired skills during retrieval, even before maintenance runs. |
+| Retract | Keep a tombstone and audit history. |
+| Forget | Erase the selected material and its derived skills, revisions, feedback and confirmation descendants. Forgetting a skill also erases its source episodes and other skills sharing those episodes; use retract to withdraw only one skill. |
+| Reach capacity | Reject additional writes explicitly; reclaim space through export and deliberate erasure. |
 
-```yaml
-- id: memory-observer
-  config:
-    captureUserMessages: true
-    captureAssistantMessages: true
-    captureToolCalls: true
-    maxTextLength: 4000
-    excludedTools: [bash]
-    captureCodeDispatches: true
-    transportTools: [run_code]
-    maxToolDigestLength: 120
+Every policy value is explicit in [cordis.patch.yml](cordis.patch.yml). Override a row by its `id` in the profile patch and supply its complete `config`. Configure `environment` entries such as `browser=chromium` and `application=libreoffice-24`; the local OS is added automatically. `availableTools` optionally narrows the current agent's tool registry. Capture and extraction budgets, TTLs, outcome weights and promotion thresholds are deployment settings.
+
+The Harness provider stores complete experience-scope snapshots in a separate `experience` storage domain. The standalone `FileExperienceStore` uses atomic replacement and an exclusive writer lease. Each tenant should have its own runtime/store or explicit scope namespace. [Architecture and design](docs/design.md) describes the storage and consistency contracts.
+
+## Programmatic API and evaluation
+
+```ts
+import {
+  ExperienceMemory, FileExperienceStore, createOpenAIExperienceDistiller,
+} from 'dsh-advanced-mem-plugin/experience/api'
+import {
+  loadLongMemEval, loadLoCoMo, evaluateDataset,
+  createApiAgentFactory, createHarnessMemoryFactory, JsonlCheckpoint,
+} from 'dsh-advanced-mem-plugin/evaluation'
 ```
 
-## What gets captured, and what gets read back
+The experience API supports `record`, `learn`, `propose`, `confirmOutcome`, `recall`, `feedback`, `maintain`, `retract`, `forget`, `snapshot` and `export`. Harness consumers access the same engine through `ctx.experience.memory`.
 
-These are two different questions, and conflating them is the bug this plugin's second iteration fixed. Tool calls *are* captured — the frequency with which your agent reaches for a tool is exactly what usage mining consumes — but a tool call's text is the agent's own machine-shaped output. An earlier version stored the raw argument JSON and let recall quote it back, so a session would open by telling the model what it had already done, in whole `run_code` programs.
+The evaluation API provides **LongMemEval**, **LoCoMo** and **OSWorld** adapters. QA runs use isolated namespaces and keep references out of agent input. Runs save a manifest, sample results, latency, token usage and resumable checkpoints. OSWorld uses a Python HTTP bridge to the real `DesktopEnv` reset/step/evaluate lifecycle; its official environment evaluator supplies the task score. Frozen experience banks keep learning and held-out evaluation separate.
 
-Records therefore carry a **use** alongside their fidelity:
+See [the evaluation guide](docs/evaluation.md) for executable API examples, dataset formats, API configuration, metrics and OSWorld deployment. Evaluation artifacts and model smoke-test helpers belong outside the source tree; the published package contains the runtime and adapters.
 
-| Use | Kinds | Indexed | Spreads activation | Quoted back to the model |
-|---|---|---|---|---|
-| `recallable` | `user-message`, `skill-invocation`, `artifact`, `note` | yes | yes | yes |
-| `evidence` | `tool-invocation`, `assistant-message`, `procedure-step` | yes | yes | **no** |
-
-The split is by author, not by usefulness. Evidence still ranks and still lights up the graph — an affinity node surfaces when a query matches the calls behind it — it simply never becomes a cue's text. `MemoryQuery.includeEvidence` lifts that for an audit surface; nothing on a request path sets it. A record captured before this field existed reads back as its kind's default, so an existing store corrects itself on first read with no migration.
-
-Two things follow at capture time:
-
-- **A tool call is stored as a label, not a transcript.** The tool name plus the first descriptive argument (`description`, `query`, `pattern`, `command`, `file_path`, …), bounded by `maxToolDigestLength`: `grep — find the config`, never the argument object. Raw arguments were actively harmful as index material — any query mentioning a path matched an unrelated call that happened to contain it.
-- **Code Mode is understood.** Under Code Mode the model calls one transport tool and drives every real tool from inside a program, so mining the outer call learns a preference for `run_code` that nobody expressed. Transports are named in `transportTools`, their own calls are skipped, and `tool/code-dispatch-start` is captured instead — the dispatches that say which tools were actually used.
-
-## How retrieval works
-
-Three independent signals, fused by reciprocal rank:
-
-1. **Lexical** — Okapi BM25 over indexed terms. The tokenizer emits lowercase word runs plus overlapping character bigrams for scripts written without spaces, so Chinese and Japanese queries hit without a segmentation dictionary.
-2. **Vector** — cosine similarity against the query embedding, over records whose stored vector came from the currently mounted embedder. Vectors from different embedders are never compared.
-3. **Graph activation** — spreading outward from directly matched nodes across active edges, `activationHops` deep with `activationFalloff` per hop. This is what surfaces a conclusion when the query only matches the raw material behind it.
-
-Fusion consumes only positions, so a BM25 score and a cosine similarity combine with no calibration step between them — which is what lets the embedder be swapped without retuning retrieval. Decay is applied *before* filtering, so a belief nobody reinforces fades out of recall on its own, with no expiry job that has to have run for the result to be correct.
-
-## Fidelity, maintenance, and updates
-
-The three mechanisms that matter once memory starts driving real-world actions:
-
-- **Fidelity is a first-class field.** `verbatim` / `summary` / `derived` classifies how faithfully a record reproduces what happened, and `MemoryQuery.minFidelity` lets a consumer refuse anything below a floor. Truncating a prompt downgrades it rather than leaving a claim it no longer earns. Non-text originals are referenced by `uri` + `mediaType` + `digest`, never copied — so an image or video stays authoritative at its source.
-- **Nothing is deleted in place.** `retract` leaves a tombstone, `supersede` records the replacement as an edge, and only `forget` erases — because a user who asks for material to be deleted must get it deleted, not hidden.
-- **Confidence moves under three laws.** Reinforcement closes a fraction of the remaining distance to 1, so repeated agreement has diminishing returns and no finite number of observations manufactures certainty from inference alone. Contradiction is multiplicative, so a well-evidenced belief survives one disagreement and a thin one collapses. Decay is exponential in time since last support.
-
-## Developing
-
-The tests drive the real plugin bodies on real Cordis registries, so they need the harness packages resolvable. Clone the harness beside this repo, then:
+## Development
 
 ```sh
-git clone https://github.com/deepseek-ai/deepseek-harness
-git clone https://github.com/CenYangtze/dsh-advanced-mem-plugin
-cd deepseek-harness && pnpm install && pnpm run build:lib:host && cd ..
-
-cd dsh-advanced-mem-plugin
+# Build the supported official Harness checkout first, following its instructions.
 pnpm install
-pnpm run link-harness ../deepseek-harness   # junctions the @deepseek-ai/* peers
-pnpm run check                              # typecheck → 154 tests → build → verify
+pnpm run link-harness ../deepseek-harness
+pnpm run check
 ```
 
-`link-harness` reproduces locally what a profile does at runtime: it points every `@deepseek-ai/*` peer at one harness installation. That single-instance property is load-bearing — two copies of cordis mean two service registries, and a plugin registered on one is invisible to the other. It is why every harness package is a **peer** dependency here and why `autoInstallPeers: false` is set.
+`check` runs type checking, the existing regression suite, the package build and export/plugin-shape verification. The verifier distinguishes service plugins, function plugins and programmatic API libraries. No `@deepseek-ai/*` dependency is bundled.
 
-`pnpm run verify` checks the things that otherwise fail at boot: that every `name:` in `cordis.patch.yml` resolves through the exports map, and that each entry point has exactly one plugin shape. A module carrying both a default export and a function-plugin `apply` makes the Cordis Loader drop the plugin namespace — silently.
+| Directory | Responsibility |
+|---|---|
+| `src/memory/` | Factual vocabulary, scoring, providers, retrieval and graph lifecycle |
+| `src/memory-store-domain/` | Durable factual records, nodes and edges |
+| `src/memory-observer/`, `src/memory-consolidation/` | Event capture and factual distillation |
+| `src/memory-recall/`, `src/tool-memory/`, `src/command-memory/` | Factual model and user interfaces |
+| `src/experience/` | Portable experience engine, schema, API extraction, file store and skill export |
+| `src/experience-store-domain/` | Harness experience persistence |
+| `src/experience-harness/` | Task capture, recall, commands and lifecycle integration |
+| `src/evaluation/` | Dataset readers, API clients, runners, checkpoints and OSWorld bridge |
+| `bench/` | Existing retrieval-analysis utilities |
 
-### Layout
+## Research basis
 
-```
-src/memory/               the hub: types, scoring, providers, query, service
-src/memory-store-domain/  durable store + zod record schemas
-src/memory-embedding-hash/  FNV-1a feature-hashing embedder
-src/memory-observer/      session-log capture, tool digests, Code Mode dispatches
-src/memory-consolidation/ behaviour-cycle distiller + scheduler
-src/memory-recall/        pre-step retrieval and injection
-src/tool-memory/          three tools + the memory protocol prompt
-src/command-memory/       the /memory command
-tests/                    154 tests, one suite per plugin
-```
-
-## Known limitations
-
-- **No stemming or lemmatization** in lexical matching — `install` does not match `installs`. Mounting the embedder covers most of the gap; a stemming tokenizer needs per-language rules this package does not own.
-- **Recall materializes the whole scope chain per query.** See `recordBudget` above.
-- **Vectors are only compared within one embedder.** Swapping embedders silently drops the vector signal for every record written before the change; those records stay lexically reachable but are not re-embedded in a batch.
-- **Nothing captures tool *results*.** Consolidation therefore learns habits, not what worked. That is the gap most worth closing before memory drives real-world actions, and the distiller seam is where an outcome-learning provider would attach.
-- **Contradiction is caller-driven.** Nothing notices that two active nodes disagree; the graph does not police its own consistency.
-- **Computer Use, MCP application adapters, and action execution are not implemented.** What memory already owes them is in place — fidelity floors at the query interface, attachment references rather than copies, `procedure` nodes carrying ordered steps, provenance back into the session log, supersession over deletion, scope partitioning. What is missing is outcome capture and a confirmation policy for irreversible steps.
-
-## Relationship to upstream
-
-These sources were developed against the DeepSeek Harness tree and repackaged here as a standalone bundle so they can be installed without forking the harness. The plugin bodies are unchanged; only module identities and cross-package imports differ. Upstream conventions this package follows — the capability-seam split, `Model-visible ⟺ logged`, no hardcoded tunables, the plugin-shape rule — are documented in the harness's own `AGENTS.md`.
+[ExpeL](https://arxiv.org/abs/2308.10144) motivates extracting reusable knowledge across task experiences. [ReasoningBank](https://arxiv.org/abs/2509.25140) motivates learning procedures and failure lessons from completed trajectories. This implementation adds explicit outcome provenance, separate factual and procedural stores, versioned lifecycle operations and environment-aware applicability.
 
 ## License
 

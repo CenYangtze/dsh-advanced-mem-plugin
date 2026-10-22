@@ -28,11 +28,14 @@ import {
   clampConfidence,
   cosineSimilarity,
   decayedConfidence,
+  isCorrection,
   rankScore,
   reciprocalRankFusion,
   reinforcedConfidence,
   similarity,
+  splitCue,
   tokenize,
+  topicTerms,
   weakenedConfidence,
 } from './scoring.ts'
 import type { ScoredItem } from './scoring.ts'
@@ -148,6 +151,8 @@ declare module '@deepseek-ai/cordis' {
   }
 
   interface Events {
+    /** Await dependent experience erasure before deleting its factual source. */
+    'memory/before-forget'(record: MemoryRecord): Promise<void>
     /**
      * A layer-0 record entered the substrate.
      * @param record - the durable record as stored.
@@ -264,6 +269,30 @@ export interface Config {
   vectorWeight: number
 }
 
+/**
+ * Merge rankings by seat: every list's first, then every list's second, and so
+ * on, keeping the first appearance of each item.
+ * @param rankings - the lists, in priority order for ties at the same seat.
+ * @param identify - the identity an item is deduplicated on.
+ * @returns one list in which each source's top entry sits ahead of any source's next.
+ */
+function interleave<T>(rankings: readonly (readonly T[])[], identify: (item: T) => string): T[] {
+  const out: T[] = []
+  const seen = new Set<string>()
+  const longest = Math.max(0, ...rankings.map(ranking => ranking.length))
+  for (let seat = 0; seat < longest; seat += 1) {
+    for (const ranking of rankings) {
+      const item = ranking[seat]
+      if (item === undefined) continue
+      const key = identify(item)
+      if (seen.has(key)) continue
+      seen.add(key)
+      out.push(item)
+    }
+  }
+  return out
+}
+
 /** Empty accumulated support for a layer-1 item created from one observation moment. */
 function initialSupport(at: number, observations: number, sessions: number): MemorySupport {
   return {
@@ -351,6 +380,12 @@ function scopeKeys(scopes: readonly MemoryScope[]): MemoryScopeKey[] {
   return keys
 }
 
+function scopeOfKey(key: MemoryScopeKey): MemoryScope {
+  if (key === 'user') return { kind: 'user' }
+  if (key.startsWith('workspace:')) return { kind: 'workspace', workspace: key.slice(10) }
+  return { kind: 'session', sessionId: key.slice(8) as Session['id'] }
+}
+
 /**
  * The text a cue would put in front of the model, for comparing one cue to
  * another.
@@ -407,6 +442,15 @@ export class MemoryRuntime extends Service {
   private storeProvider: MemoryStore | undefined
   private embedderProvider: MemoryEmbedder | undefined
   private readonly distillerProviders = new Set<MemoryDistiller>()
+  private readonly writes = new Map<MemoryScopeKey, Promise<unknown>>()
+
+  private serialize<T>(scope: MemoryScopeKey, work: () => Promise<T>): Promise<T> {
+    const next = (this.writes.get(scope) ?? Promise.resolve()).then(work, work)
+    this.writes.set(scope, next)
+    const done = (): void => { if (this.writes.get(scope) === next) this.writes.delete(scope) }
+    void next.then(done, done)
+    return next
+  }
 
   /**
    * @param ctx - the registrant context; provider registrations unwind with it.
@@ -526,7 +570,43 @@ export class MemoryRuntime extends Service {
     }
     await this.store.putRecord(record)
     this.ctx.emit('memory/recorded', record)
+    if (record.use === 'recallable' && isCorrection(text)) await this.linkCorrection(record)
     return record
+  }
+
+  /**
+   * Point the message a correction overrides at the correction.
+   *
+   * The signal is deliberately narrow: the new message must open as a
+   * correction, and the candidate must be the most recent earlier quotable
+   * message in the scope that shares at least two topical terms with it. That
+   * is enough to pair "track duration as a plain number" with "actually, switch
+   * duration to minutes", and not enough to pair it with anything that merely
+   * mentions the file. A miss costs nothing — recall still orders by date; a
+   * false link only mislabels, never hides.
+   * @param correction - the record just written.
+   */
+  private async linkCorrection(correction: MemoryRecord): Promise<void> {
+    const topic = topicTerms(correction.terms)
+    if (topic.size < 2) return
+    let best: MemoryRecord | undefined
+    let bestShared = 0
+    for (const candidate of this.store.records([correction.scope])) {
+      if (candidate.id === correction.id || candidate.status !== 'active') continue
+      if (candidate.use !== 'recallable' || candidate.createdAt > correction.createdAt) continue
+      if (candidate.supersededBy !== undefined) continue
+      let shared = 0
+      for (const term of topicTerms(candidate.terms)) if (topic.has(term)) shared += 1
+      if (shared < 2) continue
+      if (shared > bestShared || (shared === bestShared && best !== undefined && candidate.createdAt > best.createdAt)) {
+        best = candidate
+        bestShared = shared
+      }
+    }
+    if (best === undefined) return
+    const superseded: MemoryRecord = { ...best, supersededBy: correction.id }
+    await this.store.putRecord(superseded)
+    this.ctx.emit('memory/recorded', superseded)
   }
 
   /**
@@ -540,7 +620,11 @@ export class MemoryRuntime extends Service {
    * @returns the stored node, created or reinforced.
    * @throws `invalid-input` when the label or summary is blank.
    */
-  async assert(assertion: MemoryAssertion): Promise<MemoryNode> {
+  assert(assertion: MemoryAssertion): Promise<MemoryNode> {
+    return this.serialize(memoryScopeKey(assertion.scope), () => this.assertNow(assertion))
+  }
+
+  private async assertNow(assertion: MemoryAssertion): Promise<MemoryNode> {
     const label = assertion.label.trim()
     const summary = assertion.summary.trim()
     if (label.length === 0 || summary.length === 0) {
@@ -548,7 +632,7 @@ export class MemoryRuntime extends Service {
     }
     const scope = memoryScopeKey(assertion.scope)
     const at = assertion.at ?? Date.now()
-    const evidence = assertion.evidence ?? []
+    const evidence = await this.assertionEvidence(assertion.scope, assertion.evidence, summary, at)
     const existing = this.findNode(scope, assertion.type, label)
     if (existing !== undefined) {
       const merged = mergeEvidence(existing.evidence, evidence)
@@ -595,19 +679,25 @@ export class MemoryRuntime extends Service {
    * @returns the stored edge, created or reinforced.
    * @throws `unknown-item` when an endpoint does not exist, `invalid-input` when the claim is blank.
    */
-  async relate(input: MemoryRelationInput): Promise<MemoryEdge> {
+  relate(input: MemoryRelationInput): Promise<MemoryEdge> {
+    return this.serialize(memoryScopeKey(input.scope), () => this.relateNow(input))
+  }
+
+  private async relateNow(input: MemoryRelationInput): Promise<MemoryEdge> {
     const claim = input.claim.trim()
     if (claim.length === 0) {
       throw new MemoryError('invalid-input', 'a memory relation needs a non-empty claim')
     }
+    const scope = memoryScopeKey(input.scope)
     for (const endpoint of [input.from, input.to]) {
-      if (this.store.getNode(endpoint) === undefined) {
+      const node = this.store.getNode(endpoint)
+      if (node === undefined) {
         throw new MemoryError('unknown-item', `memory node '${endpoint}' does not exist`)
       }
+      if (node.scope !== scope) throw new MemoryError('invalid-input', 'memory relation endpoints must belong to its scope')
     }
-    const scope = memoryScopeKey(input.scope)
     const at = input.at ?? Date.now()
-    const evidence = input.evidence ?? []
+    const evidence = await this.assertionEvidence(input.scope, input.evidence, claim, at)
     const existing = this.findEdge(scope, input.from, input.to, input.relation)
     if (existing !== undefined) {
       const merged = mergeEvidence(existing.evidence, evidence)
@@ -645,6 +735,26 @@ export class MemoryRuntime extends Service {
     await this.store.putEdge(edge)
     this.ctx.emit('memory/edge-changed', edge, undefined)
     return edge
+  }
+
+  /** Explicit API assertions leave an evidence-only ledger when no source was supplied. */
+  private async assertionEvidence(scope: MemoryScope, evidence: readonly MemoryRecordId[] | undefined, text: string, at: number): Promise<MemoryRecordId[]> {
+    if (evidence?.length) {
+      const ids = [...new Set(evidence)]
+      for (const id of ids) {
+        const record = this.store.getRecord(id)
+        if (!record || record.status !== 'active' || record.scope !== memoryScopeKey(scope)) {
+          throw new MemoryError('invalid-input', `memory evidence '${id}' must be an active record in the same scope`)
+        }
+      }
+      return ids
+    }
+    const record = await this.remember({
+      scope, kind: 'note', text, fidelity: 'derived', use: 'evidence',
+      provenance: { author: 'api' }, at,
+    })
+    await this.store.putRecord({ ...record, promotedTo: ['assertion-ledger'] })
+    return [record.id]
   }
 
   /**
@@ -691,7 +801,20 @@ export class MemoryRuntime extends Service {
       terms: tokenize(`${node.label} ${node.summary}`),
     })))
     const lexicalEdges = bm25Rank(terms, edges.map(edge => ({ item: edge, terms: tokenize(edge.claim) })))
-    const lexicalRecords = bm25Rank(terms, records.map(record => ({ item: record, terms: record.terms })))
+    const lexicalDocuments = records.map(record => ({ item: record, terms: record.terms }))
+    const wholeLexical = bm25Rank(terms, lexicalDocuments)
+    // A multi-part cue is served part by part: each part's best record takes a
+    // seat before any part's second, so the part with the fewest distinctive
+    // terms is not starved by the one with the most. Rank fusion would not do
+    // this — a topic that dominates two lists outscores the single best answer
+    // to a third — so the lists are interleaved, whole first, and the fused
+    // score below follows from the seat.
+    const partRankings = splitCue(query.text)
+      .map(part => bm25Rank(tokenize(part), lexicalDocuments))
+      .filter(ranking => ranking.length > 0)
+    const lexicalRecords = partRankings.length === 0
+      ? wholeLexical
+      : interleave([wholeLexical, ...partRankings], entry => entry.item.id)
 
     const vectorRecords = await this.vectorRank(query, records)
     const fusedRecords = reciprocalRankFusion<MemoryRecord>(
@@ -699,6 +822,10 @@ export class MemoryRuntime extends Service {
       record => record.id,
       [1, this.config.vectorWeight],
     )
+    // With evidence quoted outright, an anchor would print the same turn twice.
+    const { anchors, confirmations } = query.includeEvidence === true
+      ? { anchors: new Map<MemoryRecordId, MemoryRecord>(), confirmations: new Map<MemoryRecordId, MemoryRecord>() }
+      : this.companionsFor(records)
     const activation = this.spreadActivation(lexicalNodes, fusedRecords, edges, nodeById)
 
     const lexicalNodePositions = rankPositions(lexicalNodes, node => node.id)
@@ -768,7 +895,21 @@ export class MemoryRuntime extends Service {
       // an old episode is not wrong, only less likely to be what was meant.
       const recency = decayedConfidence(1, this.config.inferredHalfLifeMs, record.createdAt, now)
       signals.push({ kind: 'recency', value: recency })
-      cues.push({ kind: 'record', record, score: fused.score * (0.5 + 0.5 * recency), signals })
+      // A corrected instruction ranks on relevance like any other: it is marked,
+      // not demoted. Demoting it was measured and it cost more than it saved —
+      // the message a correction overrides usually carries the data the
+      // correction acts on ("track it in hours: 3.6, 3.5" -> "actually, in
+      // minutes"), and a reader handed only the correction cannot apply it.
+      const anchor = anchors.get(record.id)
+      const confirmation = confirmations.get(record.id)
+      cues.push({
+        kind: 'record',
+        record,
+        ...(anchor === undefined ? {} : { anchor }),
+        ...(confirmation === undefined ? {} : { confirmation }),
+        score: fused.score * (0.5 + 0.5 * recency),
+        signals,
+      })
     }
 
     cues.sort((left, right) => right.score - left.score)
@@ -888,6 +1029,13 @@ export class MemoryRuntime extends Service {
    * @throws `unknown-item` when the id addresses nothing.
    */
   async retract(ref: MemoryRef): Promise<void> {
+    const item = ref.kind === 'record' ? this.store.getRecord(ref.id)
+      : ref.kind === 'node' ? this.store.getNode(ref.id) : this.store.getEdge(ref.id)
+    if (!item) throw new MemoryError('unknown-item', `memory ${ref.kind} '${ref.id}' does not exist`)
+    return this.serialize(item.scope, () => this.retractNow(ref))
+  }
+
+  private async retractNow(ref: MemoryRef): Promise<void> {
     const store = this.store
     if (ref.kind === 'record') {
       const record = store.getRecord(ref.id)
@@ -919,50 +1067,116 @@ export class MemoryRuntime extends Service {
    * @throws `unknown-item` when either node does not exist.
    */
   async supersede(outdated: MemoryNode['id'], replacement: MemoryNode['id']): Promise<void> {
+    const previous = this.store.getNode(outdated)
+    if (!previous) throw new MemoryError('unknown-item', `memory node '${outdated}' does not exist`)
+    return this.serialize(previous.scope, () => this.supersedeNow(outdated, replacement))
+  }
+
+  private async supersedeNow(outdated: MemoryNodeId, replacement: MemoryNodeId): Promise<void> {
     const store = this.store
     const previous = store.getNode(outdated)
     const next = store.getNode(replacement)
     if (previous === undefined || next === undefined) {
       throw new MemoryError('unknown-item', `memory supersession needs two existing nodes, got '${outdated}' and '${replacement}'`)
     }
+    if (previous.scope !== next.scope) throw new MemoryError('invalid-input', 'memory supersession must remain in one scope')
     const at = Date.now()
     const tombstoned: MemoryNode = { ...previous, status: 'superseded', supersededBy: replacement, updatedAt: at }
     await store.putNode(tombstoned)
     this.ctx.emit('memory/node-changed', tombstoned, previous)
-    await this.relate({
-      scope: { kind: 'user' },
+    await this.relateNow({
+      scope: scopeOfKey(previous.scope),
       from: replacement,
       to: outdated,
       relation: 'supersedes',
       claim: `${next.label} replaces the earlier belief ${previous.label}`,
       origin: 'inferred',
+      evidence: [...new Set([...previous.evidence, ...next.evidence])],
       at,
     })
   }
 
   /**
-   * Erase one layer-0 record and drop every citation of it.
+   * Erase a source record and every graph item derived from it.
    *
    * Unlike retraction this is irreversible, which is the point: it exists so a
    * user asking for material to be deleted gets deletion rather than a hidden
-   * copy. Layer-1 items keep their belief but lose that piece of evidence; a
-   * later sweep retires whatever no longer stands up.
+   * copy. Derived summaries, claims and connected edges are removed as well.
    * @param id - the record to erase.
    * @returns whether a record existed to erase.
    */
   async forget(id: MemoryRecord['id']): Promise<boolean> {
-    const store = this.store
-    const record = store.getRecord(id)
+    const record = this.store.getRecord(id)
     if (record === undefined) return false
-    for (const node of store.nodes([record.scope])) {
-      if (!node.evidence.includes(id)) continue
-      await store.putNode({ ...node, evidence: node.evidence.filter(cited => cited !== id) })
+    return this.serialize(record.scope, async () => {
+      if (!this.store.getRecord(id)) return false
+      await this.eraseClosure(record.scope, new Set([id]), new Set())
+      return true
+    })
+  }
+
+  /** Erase a belief, its supporting material and incident claims, including legacy uncited beliefs. */
+  async forgetNode(id: MemoryNodeId): Promise<number> {
+    const node = this.store.getNode(id)
+    if (!node) return 0
+    return this.serialize(node.scope, () => {
+      const current = this.store.getNode(id)
+      return current ? this.eraseClosure(current.scope, new Set(current.evidence), new Set([id])) : Promise.resolve(0)
+    })
+  }
+
+  private async eraseClosure(scope: MemoryScopeKey, records: Set<MemoryRecordId>, nodes: Set<MemoryNodeId>): Promise<number> {
+    const store = this.store
+    const nodeRows = [...store.nodes([scope])]
+    // Earlier releases stored supersession edges in user scope even when both
+    // endpoints belonged to a workspace. Include that partition for erasure.
+    const edgeRows = [...store.edges([...new Set([scope, memoryScopeKey({ kind: 'user' })])])]
+    const edges = new Set<MemoryEdgeId>()
+    // A generated assertion ledger can repeat the erased material. Follow these
+    // records too, while retaining independently authored source records.
+    const addLedgers = (ids: readonly MemoryRecordId[]): void => {
+      for (const id of ids) {
+        const record = store.getRecord(id)
+        if (record?.kind === 'note' && record.use === 'evidence'
+          && (record.provenance.author === 'agent' || record.provenance.author === 'api')) records.add(id)
+      }
     }
-    for (const edge of store.edges([record.scope])) {
-      if (!edge.evidence.includes(id)) continue
-      await store.putEdge({ ...edge, evidence: edge.evidence.filter(cited => cited !== id) })
+    let previous = -1
+    while (previous !== records.size + nodes.size + edges.size) {
+      previous = records.size + nodes.size + edges.size
+      for (const node of nodeRows) {
+        if (!nodes.has(node.id) && !node.evidence.some(id => records.has(id))) continue
+        nodes.add(node.id); addLedgers(node.evidence)
+      }
+      for (const edge of edgeRows) {
+        if (!edges.has(edge.id) && !nodes.has(edge.from) && !nodes.has(edge.to)
+          && !edge.evidence.some(id => records.has(id))) continue
+        edges.add(edge.id); addLedgers(edge.evidence)
+      }
     }
-    return store.eraseRecord(id)
+    for (const id of records) {
+      const record = store.getRecord(id)
+      if (record) await this.ctx.parallel('memory/before-forget', record)
+    }
+    for (const id of edges) await store.eraseEdge(id)
+    for (const id of nodes) await store.eraseNode(id)
+    let erased = 0
+    for (const id of records) if (await store.eraseRecord(id)) erased++
+    const removed = new Set<string>([...records, ...nodes, ...edges])
+    for (const record of store.records([scope])) {
+      const promotedTo = record.promotedTo.filter(id => !removed.has(id))
+      if (promotedTo.length !== record.promotedTo.length || (record.supersededBy && records.has(record.supersededBy))) {
+        const { supersededBy, ...rest } = record
+        await store.putRecord({ ...rest, promotedTo, ...(supersededBy && !records.has(supersededBy) ? { supersededBy } : {}) })
+      }
+    }
+    for (const node of store.nodes([scope])) {
+      if (node.supersededBy && nodes.has(node.supersededBy)) {
+        const { supersededBy: _removed, ...rest } = node
+        await store.putNode(rest)
+      }
+    }
+    return erased
   }
 
   /**
@@ -1023,7 +1237,10 @@ export class MemoryRuntime extends Service {
     }
     for (const record of pending) {
       if (!cited.has(record.id)) continue
-      await store.putRecord({ ...record, promotedTo: [...record.promotedTo, 'consolidated'] })
+      await this.serialize(key, async () => {
+        const current = store.getRecord(record.id)
+        if (current) await store.putRecord({ ...current, promotedTo: [...new Set([...current.promotedTo, 'consolidated'])] })
+      })
     }
     return {
       examined: pending.length,
@@ -1051,8 +1268,21 @@ export class MemoryRuntime extends Service {
    * @throws `no-store` when nothing is mounted.
    */
   async sweep(scopes: readonly MemoryScope[], now: number = Date.now()): Promise<MemoryMaintenanceReport> {
+    const report: MemoryMaintenanceReport = {
+      examined: 0, nodesCreated: 0, nodesReinforced: 0, edgesCreated: 0, edgesReinforced: 0, retired: 0, evicted: 0,
+    }
+    let retired = 0
+    let evicted = 0
+    for (const key of scopeKeys(scopes)) {
+      const result = await this.serialize(key, () => this.sweepScope(key, now))
+      retired += result.retired; evicted += result.evicted
+    }
+    return { ...report, retired, evicted }
+  }
+
+  private async sweepScope(key: MemoryScopeKey, now: number): Promise<MemoryMaintenanceReport> {
     const store = this.store
-    const keys = scopeKeys(scopes)
+    const keys = [key]
     let retired = 0
     for (const node of [...store.nodes(keys)]) {
       if (node.status !== 'active' || node.origin === 'asserted') continue
@@ -1157,6 +1387,64 @@ export class MemoryRuntime extends Service {
    * @param limit - how many to return.
    * @returns the selected cues, still in score order.
    */
+  /**
+   * Pair each quotable record with the evidence turns that give it its meaning.
+   *
+   * Two pairings, both within one session and both one turn apart:
+   *
+   *   anchor        the assistant turn *before* a reply that cannot stand alone
+   *                 — a question, or anything a user answered in under a dozen
+   *                 terms. "1 to 3, yes" needs "so values run 1 to 3 from now on?".
+   *   confirmation  the assistant turn *after* an instruction, when it is short,
+   *                 is not a question, and the user's next turn did not correct
+   *                 it. "Understood - converting to minutes, header 'Duration
+   *                 (min)'" restates the instruction more plainly than the
+   *                 instruction did, and the user's silence ratified it.
+   *
+   * Neither turn is ever a cue on its own: that is the self-quotation the use
+   * split exists to prevent. Attached to the user's words they are context,
+   * not claims.
+   * @param records - the candidate records of this recall.
+   * @returns the companions of each record that has any, by record id.
+   */
+  private companionsFor(records: readonly MemoryRecord[]): {
+    anchors: Map<MemoryRecordId, MemoryRecord>
+    confirmations: Map<MemoryRecordId, MemoryRecord>
+  } {
+    const bySession = new Map<string, Map<number, MemoryRecord>>()
+    for (const record of records) {
+      const { sessionId, turn } = record.provenance
+      if (sessionId === undefined || turn === undefined) continue
+      let turns = bySession.get(sessionId)
+      if (turns === undefined) {
+        turns = new Map()
+        bySession.set(sessionId, turns)
+      }
+      turns.set(turn, record)
+    }
+    const anchors = new Map<MemoryRecordId, MemoryRecord>()
+    const confirmations = new Map<MemoryRecordId, MemoryRecord>()
+    for (const record of records) {
+      if (record.use !== 'recallable') continue
+      const { sessionId, turn } = record.provenance
+      if (sessionId === undefined || turn === undefined) continue
+      const turns = bySession.get(sessionId)
+      const previous = turns?.get(turn - 1)
+      if (previous !== undefined && previous.use === 'evidence'
+        && (previous.text.trimEnd().endsWith('?') || record.terms.length < 12)) {
+        anchors.set(record.id, previous)
+      }
+      const next = turns?.get(turn + 1)
+      const afterNext = turns?.get(turn + 2)
+      if (next !== undefined && next.use === 'evidence' && next.terms.length <= 30
+        && !next.text.trimEnd().endsWith('?')
+        && (afterNext === undefined || !isCorrection(afterNext.text))) {
+        confirmations.set(record.id, next)
+      }
+    }
+    return { anchors, confirmations }
+  }
+
   private diversify(cues: readonly MemoryCue[], limit: number): MemoryCue[] {
     if (this.config.diversityThreshold >= 1) return cues.slice(0, limit)
     const selected: MemoryCue[] = []
@@ -1368,6 +1656,15 @@ export class MemoryRuntime extends Service {
     at: number,
     update: (confidence: number) => number,
     reinforcing: boolean,
+  ): Promise<void> {
+    if (ref.kind === 'record') throw new MemoryError('invalid-input', 'layer-0 records carry no belief to adjust')
+    const item = ref.kind === 'node' ? this.store.getNode(ref.id) : this.store.getEdge(ref.id)
+    if (!item) throw new MemoryError('unknown-item', `memory ${ref.kind} '${ref.id}' does not exist`)
+    return this.serialize(item.scope, () => this.adjustNow(ref, at, update, reinforcing))
+  }
+
+  private async adjustNow(
+    ref: MemoryRef, at: number, update: (confidence: number) => number, reinforcing: boolean,
   ): Promise<void> {
     if (ref.kind === 'record') {
       throw new MemoryError('invalid-input', 'layer-0 records carry no belief to adjust')

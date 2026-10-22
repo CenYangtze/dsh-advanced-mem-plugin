@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
-import AgentRegistry, { Inbox } from '@deepseek-ai/dsh-agent'
-import type { Agent, AgentStatus } from '@deepseek-ai/dsh-agent'
+import AgentRegistry from '@deepseek-ai/dsh-agent'
+import type { Agent } from '@deepseek-ai/dsh-agent'
 import CommandRuntime from '@deepseek-ai/dsh-commands'
 import MemoryRuntime from '../../src/memory/index.ts'
 import type { Config as MemoryConfig, MemoryScope } from '../../src/memory/index.ts'
@@ -38,23 +38,14 @@ const workspace: MemoryScope = { kind: 'workspace', workspace: '/repo' }
 /** A live idle agent whose session carries the workspace the command scopes to. */
 function stubAgent(ctx: Context, id: string): Agent {
   const session = ctx.sessions.create(SessionId(id), { meta: { cwd: '/repo' } })
-  const inbox = new Inbox(session, { inserted: () => {}, discarded: () => {}, claimed: () => {} })
-  const status: AgentStatus = 'idle'
+  // The command reads session scope and registry identity; no loop is driven.
   return {
     id: session.id,
     options: {},
     session,
-    inbox,
     ctx: new Context(),
-    get status() { return status },
-    send: () => {},
-    followup: () => {},
-    steer: () => {},
-    inject(input) { inbox.append('next-step', input) },
-    cancel() {},
-    runMaintenance: task => task(new AbortController().signal),
-    whenIdle() { return Promise.resolve() },
-  }
+    status: 'idle',
+  } as unknown as Agent
 }
 
 /** Mount the real command registry, memory hub, and this producer. */

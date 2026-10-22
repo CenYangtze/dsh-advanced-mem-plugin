@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
-import { CallId } from '@deepseek-ai/dsh-llm'
+import { ToolCallId } from '@deepseek-ai/dsh-llm'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime from '@deepseek-ai/dsh-tools'
 import SessionStore, { SessionId } from '@deepseek-ai/dsh-session'
@@ -93,6 +93,14 @@ class TestStore implements MemoryStore {
     return Promise.resolve()
   }
 
+  eraseNode(id: MemoryNodeId): Promise<boolean> {
+    return Promise.resolve(this.nodeRows.delete(id))
+  }
+
+  eraseEdge(id: MemoryEdgeId): Promise<boolean> {
+    return Promise.resolve(this.edgeRows.delete(id))
+  }
+
   eraseRecord(id: MemoryRecordId): Promise<boolean> {
     return Promise.resolve(this.recordRows.delete(id))
   }
@@ -122,7 +130,7 @@ function workspaceAgent(ctx: Context, id: string, cwd: string | null = '/repo'):
 function invoke(ctx: Context, name: string, args: unknown, agent?: Agent) {
   return ctx.tools.execute({
     signal: SIGNAL,
-    callId: CallId(`call-${++calls}`),
+    callId: ToolCallId(`call-${++calls}`),
     name,
     arguments: args,
     ...agent === undefined ? {} : { agent },
@@ -175,6 +183,9 @@ describe('memory_write', () => {
     const profile = ctx.memory.profile([{ kind: 'workspace', workspace: '/repo' }])
     expect(profile.nodes[0]).toMatchObject({ label: 'pnpm', origin: 'asserted' })
     expect(profile.nodes[0]?.decay.halfLifeMs).toBeNull()
+    const evidence = ctx.memory.store.getRecord(profile.nodes[0]!.evidence[0]!)
+    expect(evidence).toMatchObject({ use: 'evidence', fidelity: 'derived', provenance: { author: 'agent', tool: 'memory_write', sessionId: agent.session.id } })
+    expect(evidence?.provenance.callId).toBeDefined()
   })
 
   it('marks a guess as inferred, so it erodes unless it is seen again', async () => {

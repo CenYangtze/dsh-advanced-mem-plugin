@@ -8,7 +8,7 @@
  * @module dsh-advanced-mem-plugin/src/memory/providers
  */
 
-import type { JsonValue } from '@deepseek-ai/dsh-session'
+import type { JsonValue } from '@deepseek-ai/dsh-util-values'
 import type {
   MemoryEdge,
   MemoryEdgeId,
@@ -107,6 +107,10 @@ export interface MemoryStore {
    * @returns whether a record existed to erase.
    */
   eraseRecord(id: MemoryRecordId): Promise<boolean>
+  /** Permanently remove a derived node when its source is erased. */
+  eraseNode(id: MemoryNodeId): Promise<boolean>
+  /** Permanently remove a derived edge when its source or endpoint is erased. */
+  eraseEdge(id: MemoryEdgeId): Promise<boolean>
 }
 
 /**

@@ -1,6 +1,6 @@
 # AGENTS.md
 
-An out-of-tree DeepSeek Harness **bundle**: eight Cordis plugins that give the agent cross-session memory. Read [README.md](README.md) for what it does and how a user installs it; this file is the working contract for changing it.
+An out-of-tree DeepSeek Harness **bundle**: ten mounted Cordis plugins provide separate factual and experience memory, alongside portable experience and evaluation APIs. Read [README.md](README.md) for installation and use; this file is the working contract for changing it.
 
 ## Commands
 
@@ -8,7 +8,7 @@ An out-of-tree DeepSeek Harness **bundle**: eight Cordis plugins that give the a
 |---|---|
 | `pnpm run link-harness ../deepseek-harness` | One-time dev setup: junction every `@deepseek-ai/*` peer to a harness checkout. |
 | `pnpm run typecheck` | `tsc --noEmit` over `src/`, `tests/`, and the configs. |
-| `pnpm run test` | 198 tests, one suite per plugin plus the benchmark harness. |
+| `pnpm run test` | The maintained regression suites for the factual plugins and benchmark harness. |
 | `pnpm run build` | `tsdown` → `lib/`. Also the `prepare` script pnpm runs on a git install. |
 | `pnpm run verify` | Patch rows resolve through the exports map; each entry point has exactly one plugin shape. |
 | `pnpm run check` | All four, in order. Run before pushing — nothing on the server runs them. |
@@ -38,6 +38,12 @@ An out-of-tree DeepSeek Harness **bundle**: eight Cordis plugins that give the a
 
 **Model-facing changes are the expensive kind.** The three tool schemas and the memory protocol section sit in every request's prefix. Adding a field or reordering a schema invalidates provider cache reuse for every session. Recall is injected once per *turn*, appended after the claimed input — keep it that way.
 
+**Experience is a separate channel.** Task outcomes and agent procedures belong in the experience domain, never in the user-preference graph. A turn ending is an unknown task outcome. Active skills require evidence-backed outcomes, applicable environments and available tools; model self-judgement alone does not activate them.
+
+**Lifecycle operations preserve provenance.** Ordinary deduplication must not revive withdrawn, expired or quarantined skills. Supersession creates an explicit successor. Forget erases dependent revisions and feedback, invalidates in-flight capture and checks evidence again after external extraction.
+
+**Evaluation labels stay with the evaluator.** Use isolated attempt namespaces, frozen training experience and held-out identities. Production model access uses APIs. Keep downloaded datasets, credentials, run outputs and temporary CLI smoke adapters outside the source tree.
+
 ## Layout
 
 ```
@@ -49,6 +55,10 @@ src/memory-consolidation/   behaviour-cycle distiller + turn scheduler
 src/memory-recall/          agent/pre-step retrieval and injection
 src/tool-memory/            memory_search / memory_write / memory_forget + prompt section
 src/command-memory/         the /memory command: the surface addressed to the person
+src/experience/             portable task/skill engine, schemas, API extraction, file store
+src/experience-store-domain/ independent experience persistence for Harness
+src/experience-harness/     capture, separate recall, /experience and lifecycle integration
+src/evaluation/             API dataset runners, checkpoints and real OSWorld bridge
 tests/<plugin>/             suites drive the real plugin bodies on real registries
 bench/                      benchmark harness (4 datasets); dev-only, never published
 docs/design.md              why the subsystem is shaped this way (+ .zh.md)
@@ -58,4 +68,4 @@ Docs are bilingual: an English page and its `.zh.md` translation change together
 
 ## Upstream
 
-Developed against the DeepSeek Harness tree and repackaged standalone. Plugin bodies are unchanged from upstream; only module identities and cross-package imports differ. When porting a change back, the harness equivalents live under `packages/memory/*` with scoped names (`@deepseek-ai/dsh-memory`, `@deepseek-ai/dsh-tool-memory`, …) and per-package manifests.
+The integration is verified against official DeepSeek Harness `dsh-v0.2.1-rc.2` (`687f282e8625c6b8d11ff58211a90524be2e4317`). The bundle owns its memory implementations and consumes the host's service contracts. Preserve producer-specific message sources, PTC event names and complete pre-step decision metadata when updating the adapter. See `docs/compatibility.md` and its Chinese translation for the validation record.

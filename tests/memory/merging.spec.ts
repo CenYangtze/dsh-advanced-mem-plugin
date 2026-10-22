@@ -200,8 +200,8 @@ describe('support weighting in recall', () => {
     const off = await scoreUnder(0)
     const on = await scoreUnder(0.15)
     expect(on).toBeGreaterThan(off)
-    // Ten reinforcements and no cited evidence, so support totals ten.
-    expect(on / off).toBeCloseTo(1 + 0.15 * Math.log1p(10), 5)
+    // Ten reinforcements plus the original API assertion ledger.
+    expect(on / off).toBeCloseTo(1 + 0.15 * Math.log1p(11), 5)
   })
 })
 

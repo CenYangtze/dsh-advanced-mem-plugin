@@ -48,6 +48,8 @@ for (const row of rows) {
 
 const entryPoints = Object.keys(manifest.exports ?? {})
   .filter(subpath => subpath !== './package.json' && !subpath.endsWith('.yml'))
+// Public programmatic libraries are importable entry points, not Loader rows.
+const libraries = new Set(['./experience/api', './evaluation'])
 
 for (const subpath of entryPoints) {
   const target = manifest.exports[subpath]?.default
@@ -68,6 +70,11 @@ for (const subpath of entryPoints) {
   }
   const hasDefault = typeof mod.default === 'function'
   const hasApply = typeof mod.apply === 'function'
+  if (libraries.has(subpath)) {
+    if (hasDefault || hasApply) errors.push(`${subpath}: API library must not declare a plugin shape`)
+    else console.log(`  ok  ${subpath.padEnd(18)} API library`)
+    continue
+  }
   if (hasDefault && hasApply) {
     errors.push(`${subpath}: exports both a default and \`apply\`; the Loader drops the plugin namespace for such a module`)
   } else if (!hasDefault && !hasApply) {

@@ -29,7 +29,6 @@ import type {
   MemoryRecord,
   MemoryRecordId,
 } from '../memory/index.ts'
-import { recordUseFor } from '../memory/index.ts'
 import { frequencyConfidence } from './distiller.ts'
 import type { DistillerPolicy } from './distiller.ts'
 
@@ -172,7 +171,7 @@ export class StatedPreferenceDistiller implements MemoryDistiller {
       // The same rule the whole subsystem turns on: only what the user wrote can
       // be the subject of a belief about the user. An assistant message that
       // says "I prefer X" is the model quoting itself back into memory.
-      if (recordUseFor(record.kind) !== 'recallable') continue
+      if (record.use !== 'recallable') continue
       if (record.kind !== 'user-message' && record.kind !== 'note') continue
       for (const claim of claimsIn(record.text, this.policy)) {
         const key = `${claim.type}:${claim.subject}`
@@ -211,6 +210,6 @@ export class StatedPreferenceDistiller implements MemoryDistiller {
  * @returns true when the user authored it and it carries prose rather than a call.
  */
 export function statable(record: MemoryRecord): boolean {
-  return recordUseFor(record.kind) === 'recallable'
+  return record.use === 'recallable'
     && (record.kind === 'user-message' || record.kind === 'note')
 }

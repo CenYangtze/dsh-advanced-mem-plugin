@@ -67,11 +67,11 @@ describe('actionOf', () => {
   })
 
   it('falls back to the first line for a skill invocation with no named skill', () => {
-    expect(actionOf(record({ kind: 'skill-invocation', text: 'code-review\nbody' }))).toBe('skill:code-review')
+    expect(actionOf(record({ kind: 'skill-invocation', use: 'recallable', text: 'code-review\nbody' }))).toBe('skill:code-review')
   })
 
   it('prefers the named skill over the text', () => {
-    expect(actionOf(record({ kind: 'skill-invocation', text: 'body', provenance: { skill: 'deploy' } })))
+    expect(actionOf(record({ kind: 'skill-invocation', use: 'recallable', text: 'body', provenance: { skill: 'deploy' } })))
       .toBe('skill:deploy')
   })
 
@@ -83,6 +83,7 @@ describe('actionOf', () => {
   it('refuses every agent-authored kind, not just tool calls', () => {
     expect(actionOf(record({ kind: 'assistant-message', text: 'I prefer bash' }))).toBeUndefined()
     expect(actionOf(record({ kind: 'procedure-step', text: 'step 1' }))).toBeUndefined()
+    expect(actionOf(record({ kind: 'skill-invocation', use: 'evidence', text: 'agent-selected skill' }))).toBeUndefined()
   })
 })
 

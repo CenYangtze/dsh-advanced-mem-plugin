@@ -20,7 +20,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
 import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
-// Type-only: Code Mode declares `tool/code-dispatch-start` on SessionEventMap by
+// Type-only: PTC declares `tool/ptc-dispatch-start` on SessionEventMap by
 // module augmentation, so the arm below is only well-typed with it in scope.
 import type {} from '@deepseek-ai/dsh-tools'
 import { sessionScope } from '../memory/index.ts'
@@ -112,7 +112,6 @@ function visibleText(content: readonly ContentBlock[]): string {
       case 'text':
         parts.push(block.text)
         break
-      case 'tool-result':
       case 'tool-call':
       case 'reasoning':
       case 'image':
@@ -156,21 +155,19 @@ function attachmentsOf(content: readonly ContentBlock[]): MemoryAttachment[] {
  * Classify one message source as capture material.
  *
  * `MessageSourceMap` is merge-extensible, so this switches on the kinds the
- * harness produces and treats every other producer as a user-initiated entry
- * point — an explicitly invoked skill being the case that exists today.
+ * harness produces and admits only explicit user messages and skill invocations.
+ * New context producers remain excluded until their authorship is classified.
  * @param sourceKind - the producing source's discriminant.
  * @returns the record kind to capture as, or `undefined` for harness output.
  */
 function capturedKind(sourceKind: string): MemoryRecordKind | undefined {
   switch (sourceKind) {
-    case 'plugin':
-    case 'model':
-    case 'tool':
-      return undefined
     case 'user':
       return 'user-message'
-    default:
+    case 'skill-invocation':
       return 'skill-invocation'
+    default:
+      return undefined
   }
 }
 
@@ -272,7 +269,7 @@ export function apply(ctx: Context, config: Config): void {
       kind: 'tool-invocation',
       text: digest.length === 0 ? tool : `${tool} — ${digest}`,
       fidelity: 'derived',
-      provenance: where,
+      provenance: { ...where, author: 'agent' },
     }
   }
   // One chain, so records land in log order and a slow medium cannot interleave
@@ -304,13 +301,19 @@ export function apply(ctx: Context, config: Config): void {
         // itself; capturing it would feed the graph its own output as if it
         // were evidence about the user.
         if (kind === undefined) return
+        if (kind === 'skill-invocation') {
+          const skill = 'name' in message.source && typeof message.source.name === 'string' ? message.source.name.trim() : ''
+          if (!skill) return
+          enqueue({ scope, kind, text: skill, fidelity: 'derived', provenance: { ...provenance, author: 'user', skill } })
+          return
+        }
         enqueue({
           scope,
           kind,
           text: reduced.text,
           fidelity: reduced.reduced ? 'summary' : 'verbatim',
           attachments,
-          provenance,
+          provenance: { ...provenance, author: 'user' },
         })
         return
       }
@@ -324,7 +327,7 @@ export function apply(ctx: Context, config: Config): void {
           kind: 'assistant-message',
           text: reduced.text,
           fidelity: reduced.reduced ? 'summary' : 'verbatim',
-          provenance: { ...provenance, turn: event.data.turn },
+          provenance: { ...provenance, author: 'agent', turn: event.data.turn },
         })
         return
       }
@@ -341,7 +344,7 @@ export function apply(ctx: Context, config: Config): void {
         }))
         return
       }
-      case 'tool/code-dispatch-start': {
+      case 'tool/ptc-dispatch-start': {
         // Code Mode's real tool calls. Taken at dispatch start rather than at
         // completion: this is the moment the model reached for the tool, which
         // is what usage mining is about, and it stays symmetric with `tool/call`

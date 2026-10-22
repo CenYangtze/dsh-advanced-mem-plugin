@@ -18,7 +18,7 @@
 import { mkdir, writeFile } from 'node:fs/promises'
 import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { bm25Rank, cosineSimilarity, reciprocalRankFusion, tokenize } from '@deepseek-ai/dsh-memory'
+import { bm25Rank, cosineSimilarity, reciprocalRankFusion, tokenize } from '../src/memory/index.ts'
 import { ApiEmbedder } from './embedding-api.ts'
 import { MemoryStack } from './stack.ts'
 import { CUTOFFS, score, summarize } from './metrics.ts'

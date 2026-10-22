@@ -12,7 +12,6 @@
  * @module dsh-advanced-mem-plugin/src/memory-consolidation/distiller
  */
 
-import { recordUseFor } from '../memory/index.ts'
 import type {
   MemoryCandidateEdge,
   MemoryCandidateNode,
@@ -86,14 +85,13 @@ function tally(table: Map<string, ActionTally>, key: string, record: MemoryRecor
  * A skill invocation is the opposite case and stays: the user typed the skill,
  * so reaching for one repeatedly is genuinely their habit.
  *
- * The test is {@link recordUseFor}, so this rule and the one deciding what may
- * be quoted back stay a single rule rather than drifting apart — which is
- * precisely how tool affinities survived the first time it was applied.
+ * The record's effective use gates both mining and quoting. Producer overrides
+ * remain authoritative even for kinds that are normally user-authored.
  * @param record - the layer-0 record.
  * @returns the action key, prefixed by its kind so a tool and a skill of the same name stay distinct.
  */
 export function actionOf(record: MemoryRecord): string | undefined {
-  if (recordUseFor(record.kind) !== 'recallable') return undefined
+  if (record.use !== 'recallable') return undefined
   if (record.kind === 'skill-invocation') {
     const skill = record.provenance.skill ?? record.text.split('\n', 1)[0]?.trim()
     return skill === undefined || skill.length === 0 ? undefined : `skill:${skill}`

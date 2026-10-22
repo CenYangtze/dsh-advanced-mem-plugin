@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
-import { CallId, createUserMessage } from '@deepseek-ai/dsh-llm'
+import { ToolCallId, createUserMessage } from '@deepseek-ai/dsh-llm'
 import SessionStore, { SessionId } from '@deepseek-ai/dsh-session'
 import type { Session } from '@deepseek-ai/dsh-session'
 import MemoryRuntime from '../../src/memory/index.ts'
@@ -87,6 +87,8 @@ class RecordingStore {
   eraseRecord(id: string): Promise<boolean> {
     return Promise.resolve(this.rows.delete(id))
   }
+  eraseNode(): Promise<boolean> { return Promise.resolve(false) }
+  eraseEdge(): Promise<boolean> { return Promise.resolve(false) }
 }
 
 /** Boot the hub, a recording store, a session store, and the observer. */
@@ -169,7 +171,7 @@ describe('memory-observer', () => {
     const { store, session, settle } = await harness()
     session.append('turn/start', { turn: 1 })
     session.append('tool/call', {
-      turn: 1, step: 1, callId: CallId('c-1'), name: 'bash', arguments: '{"command":"ls"}',
+      turn: 1, step: 1, callId: ToolCallId('c-1'), name: 'bash', arguments: '{"command":"ls"}',
     })
     await settle()
     expect(store.written[0]).toMatchObject({
@@ -184,7 +186,7 @@ describe('memory-observer', () => {
     const { store, session, settle } = await harness()
     session.append('turn/start', { turn: 1 })
     session.append('tool/call', {
-      turn: 1, step: 1, callId: CallId('c-1'), name: 'bash', arguments: '{"command":"ls"}',
+      turn: 1, step: 1, callId: ToolCallId('c-1'), name: 'bash', arguments: '{"command":"ls"}',
     })
     userTurn(session, 'please list the files')
     await settle()
@@ -198,7 +200,7 @@ describe('memory-observer', () => {
     session.append('tool/call', {
       turn: 1,
       step: 1,
-      callId: CallId('c-1'),
+      callId: ToolCallId('c-1'),
       name: 'write',
       arguments: JSON.stringify({ description: 'Rewrite the landing page', file_path: '/repo/index.html' }),
     })
@@ -210,7 +212,7 @@ describe('memory-observer', () => {
     const { store, session, settle } = await harness()
     session.append('turn/start', { turn: 1 })
     session.append('tool/call', {
-      turn: 1, step: 1, callId: CallId('c-1'), name: 'get_goal', arguments: '{}',
+      turn: 1, step: 1, callId: ToolCallId('c-1'), name: 'get_goal', arguments: '{}',
     })
     await settle()
     expect(store.written[0]?.text).toBe('get_goal')
@@ -223,15 +225,15 @@ describe('memory-observer', () => {
     session.append('tool/call', {
       turn: 1,
       step: 1,
-      callId: CallId('c-1'),
+      callId: ToolCallId('c-1'),
       name: 'run_code',
       arguments: JSON.stringify({ code: 'await tools.grep({pattern:"x"})', description: 'Search the tree' }),
     })
     // What the program actually did.
-    session.append('tool/code-dispatch-start', {
-      rootCallId: CallId('c-1'),
-      parentCallId: CallId('c-1'),
-      subCallId: CallId('c-1:code:1'),
+    session.append('tool/ptc-dispatch-start', {
+      rootCallId: ToolCallId('c-1'),
+      parentCallId: ToolCallId('c-1'),
+      subCallId: ToolCallId('c-1:code:1'),
       name: 'grep',
       arguments: { pattern: 'x', description: 'Search the tree' },
     })
@@ -243,10 +245,10 @@ describe('memory-observer', () => {
   it('leaves Code Mode dispatches uncaptured when that capture is off', async () => {
     const { store, session, settle } = await harness({ captureCodeDispatches: false })
     session.append('turn/start', { turn: 1 })
-    session.append('tool/code-dispatch-start', {
-      rootCallId: CallId('c-1'),
-      parentCallId: CallId('c-1'),
-      subCallId: CallId('c-1:code:1'),
+    session.append('tool/ptc-dispatch-start', {
+      rootCallId: ToolCallId('c-1'),
+      parentCallId: ToolCallId('c-1'),
+      subCallId: ToolCallId('c-1:code:1'),
       name: 'grep',
       arguments: { pattern: 'x' },
     })
@@ -256,10 +258,15 @@ describe('memory-observer', () => {
 
   it('never captures harness-injected context, which would feed the graph its own output', async () => {
     const { store, session, settle } = await harness()
-    session.append('user/message', createUserMessage({
-      content: [{ type: 'text', text: 'recalled memory block' }],
-      source: { kind: 'plugin', plugin: 'memory-recall', form: 'snapshot', sections: [] },
-    }), { surfaceOp: 'append' })
+    for (const source of [
+      { kind: 'memory-recall' as const, form: 'snapshot' as const, sections: [] },
+      { kind: 'tool-registry' as const },
+      { kind: 'ptc-mode' as const },
+    ]) {
+      session.append('user/message', createUserMessage({
+        content: [{ type: 'text', text: 'harness context' }], source,
+      }), { surfaceOp: 'append' })
+    }
     await settle()
     expect(store.written).toEqual([])
   })
@@ -268,7 +275,7 @@ describe('memory-observer', () => {
     const { store, session, settle } = await harness({ captureUserMessages: false, captureToolCalls: false })
     userTurn(session, 'ignored')
     session.append('turn/start', { turn: 1 })
-    session.append('tool/call', { turn: 1, step: 1, callId: CallId('c-1'), name: 'bash', arguments: '{}' })
+    session.append('tool/call', { turn: 1, step: 1, callId: ToolCallId('c-1'), name: 'bash', arguments: '{}' })
     await settle()
     expect(store.written).toEqual([])
   })
@@ -276,8 +283,8 @@ describe('memory-observer', () => {
   it('skips an excluded tool', async () => {
     const { store, session, settle } = await harness({ excludedTools: ['bash'] })
     session.append('turn/start', { turn: 1 })
-    session.append('tool/call', { turn: 1, step: 1, callId: CallId('c-1'), name: 'bash', arguments: '{}' })
-    session.append('tool/call', { turn: 1, step: 1, callId: CallId('c-2'), name: 'fs_read', arguments: '{}' })
+    session.append('tool/call', { turn: 1, step: 1, callId: ToolCallId('c-1'), name: 'bash', arguments: '{}' })
+    session.append('tool/call', { turn: 1, step: 1, callId: ToolCallId('c-2'), name: 'fs_read', arguments: '{}' })
     await settle()
     expect(store.written.map(record => record.provenance.tool)).toEqual(['fs_read'])
   })

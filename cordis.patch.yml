@@ -125,3 +125,59 @@
         profileLimit: 20
         suggestLimit: 5
         searchLimit: 10
+
+    - id: experience
+      name: dsh-advanced-mem-plugin/experience
+      config:
+        minTrustedEpisodes: 1
+        minConfidence: 0.6
+        duplicateSimilarity: 0.85
+        skillTtlMs: 7776000000
+        candidateTtlMs: 2592000000
+        maxEpisodes: 2000
+        maxSkills: 500
+        maxTextLength: 4000
+        maxSteps: 30
+        maxItemsPerField: 20
+        maxCandidatesPerLearn: 8
+        maxEpisodesPerLearn: 8
+        maxExistingSkillsPerLearn: 16
+        maxDistillationCharacters: 60000
+        maxRecall: 4
+        feedbackPrior: 2
+        harmfulFeedbackThreshold: 2
+        verifiedOutcomeWeight: 1
+        userOutcomeWeight: 0.9
+        modelOutcomeWeight: 0.35
+        unknownOutcomeWeight: 0
+
+    - id: experience-store
+      name: dsh-advanced-mem-plugin/experience-store-domain
+
+    - id: experience-harness
+      name: dsh-advanced-mem-plugin/experience-harness
+      config:
+        captureTurns: true
+        autoLearn: true
+        learnEveryTurns: 1
+        maxPendingJobs: 32
+        maxRecall: 3
+        maxCharacters: 5000
+        recallTimeoutMs: 250
+        viewLimit: 20
+        excludedTools: []
+        transportTools: [run_code]
+        environment: []
+        # Empty means use the agent's current tool registry without an extra allowlist.
+        availableTools: []
+        # Set these environment variables to enable the OpenAI-compatible API distiller.
+        endpointEnv: DSH_EXPERIENCE_ENDPOINT
+        modelEnv: DSH_EXPERIENCE_MODEL
+        apiKeyEnv: DSH_EXPERIENCE_API_KEY
+        temperature: 0
+        maxTokens: 4096
+        timeoutMs: 60000
+        maxResponseBytes: 1048576
+        maxExtractionInputChars: 64000
+        maxObservationLength: 1000
+        promptVersion: experience-v1

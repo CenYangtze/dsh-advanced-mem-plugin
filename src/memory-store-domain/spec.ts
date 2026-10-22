@@ -37,6 +37,7 @@ const attachmentSchema = z.object({
 })
 
 const provenanceSchema = z.object({
+  author: z.enum(['user', 'agent', 'api']).optional(),
   sessionId: z.string().min(1).optional(),
   eventSeq: z.number().int().nonnegative().optional(),
   turn: z.number().int().nonnegative().optional(),

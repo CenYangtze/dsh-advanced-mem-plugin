@@ -1,15 +1,26 @@
 /** Package-owned memory graph invariants. @module dsh-advanced-mem-plugin/invariant */
 
-import type { Context } from '@deepseek-ai/cordis'
-import type { InvariantFailure, InvariantInstaller } from '@deepseek-ai/dsh-invariants'
+import type { Context, Inject } from '@deepseek-ai/cordis'
 import type { MemoryEdge, MemoryNode, MemoryRecord, MemorySupport } from './types.ts'
+
+/** Optional diagnostics protocol retained for hosts that provide a registry. */
+type InvariantFailure = (message: string) => never
+
+interface InvariantInstaller {
+  (ctx: Context, fail: InvariantFailure): void | Promise<void>
+  readonly inject?: Inject
+}
+
+interface InvariantRegistry {
+  register(packageName: string, installer: InvariantInstaller): (() => void) | PromiseLike<() => void>
+}
 
 const PACKAGE_NAME = 'dsh-advanced-mem-plugin'
 
 /** Cordis companion plugin name. */
 export const name = 'memory-invariant'
-/** Service required before the companion can reserve package ownership. */
-export const inject = ['invariants']
+/** Memory must be available before the optional diagnostic companion starts. */
+export const inject = ['memory']
 
 /**
  * Validate the belief state shared by nodes and edges.
@@ -121,5 +132,10 @@ const install: InvariantInstaller = Object.assign((ctx: Context, fail: Invariant
  * @param ctx - Cordis context carrying the invariant service.
  * @returns the installed registration's disposer after setup succeeds.
  */
-export const apply = (ctx: Context): Promise<() => void> =>
-  Promise.resolve(ctx.invariants.register(PACKAGE_NAME, install))
+export function apply(ctx: Context): Promise<() => void> {
+  const registry = ctx.get('invariants') as InvariantRegistry | undefined
+  if (registry === undefined || typeof registry.register !== 'function') {
+    throw new Error('memory-invariant: this optional companion requires an invariants registry supplied by the host')
+  }
+  return Promise.resolve(registry.register(PACKAGE_NAME, install))
+}

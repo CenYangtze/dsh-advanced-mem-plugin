@@ -319,28 +319,39 @@ export function apply(ctx: Context, config: Config): void {
     },
     async execute(args, exec) {
       const summary = args.summary.trim()
+      if (!args.label.trim() || !summary) throw new Error('a memory assertion needs a non-empty label and summary')
       if (summary.length > config.maxSummaryLength) {
         throw new Error(
           `summary is ${summary.length} characters; keep it under ${config.maxSummaryLength} so the memory stays a single statement`,
         )
       }
       const scope = resolveScope(args.scope ?? 'workspace', exec)
+      let target: MemoryNode | undefined
+      if (args.related_to !== undefined) {
+        if (args.relation === undefined || args.claim === undefined) {
+          throw new Error('`related_to` requires both `relation` and `claim`')
+        }
+        target = findByLabel(ctx, [scope], args.related_to)
+        if (target === undefined) throw new Error(`no memory labelled ${JSON.stringify(args.related_to)} in ${scope.kind} scope`)
+      }
+      const evidence = await ctx.memory.remember({
+        scope, kind: 'note', text: [summary, args.claim].filter(Boolean).join('\n'),
+        fidelity: 'derived', use: 'evidence',
+        provenance: {
+          author: 'agent', tool: 'memory_write', callId: exec.callId,
+          ...(exec.agent ? { sessionId: exec.agent.session.id } : {}),
+        },
+      })
       const node = await ctx.memory.assert({
         scope,
         type: args.type,
         label: args.label,
         summary,
         origin: args.stated_by_user ? 'asserted' : 'inferred',
+        evidence: [evidence.id],
       })
       let linked = false
-      if (args.related_to !== undefined) {
-        if (args.relation === undefined || args.claim === undefined) {
-          throw new Error('`related_to` requires both `relation` and `claim`')
-        }
-        const target = findByLabel(ctx, [scope], args.related_to)
-        if (target === undefined) {
-          throw new Error(`no memory labelled ${JSON.stringify(args.related_to)} in ${scope.kind} scope`)
-        }
+      if (target !== undefined && args.relation !== undefined && args.claim !== undefined) {
         await ctx.memory.relate({
           scope,
           from: node.id,
@@ -348,6 +359,7 @@ export function apply(ctx: Context, config: Config): void {
           relation: args.relation,
           claim: args.claim,
           origin: args.stated_by_user ? 'asserted' : 'inferred',
+          evidence: [evidence.id],
         })
         linked = true
       }
@@ -409,13 +421,10 @@ export function apply(ctx: Context, config: Config): void {
         throw new Error(`no memory labelled ${JSON.stringify(args.label)}`)
       }
       const mode = args.mode ?? 'retract'
-      await ctx.memory.retract({ kind: 'node', id: node.id })
       let evidenceErased = 0
       if (mode === 'erase') {
-        for (const record of node.evidence) {
-          if (await ctx.memory.forget(record)) evidenceErased++
-        }
-      }
+        evidenceErased = await ctx.memory.forgetNode(node.id)
+      } else await ctx.memory.retract({ kind: 'node', id: node.id })
       return { label: node.label, mode, evidenceErased }
     },
     presentCall: args => ({ card: 'generic', title: `Forget: ${args.label}`, kind: 'other' }),

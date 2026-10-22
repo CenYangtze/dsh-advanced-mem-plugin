@@ -250,6 +250,14 @@ export class DomainMemoryStore implements MemoryStore {
   eraseRecord(id: MemoryRecordId): Promise<boolean> {
     return this.recordIndex.erase(id)
   }
+
+  eraseNode(id: MemoryNodeId): Promise<boolean> {
+    return this.nodeIndex.erase(id)
+  }
+
+  eraseEdge(id: MemoryEdgeId): Promise<boolean> {
+    return this.edgeIndex.erase(id)
+  }
 }
 
 /**

@@ -13,7 +13,8 @@
  */
 
 import type { Branded } from '@deepseek-ai/dsh-brand'
-import type { JsonValue, SessionId } from '@deepseek-ai/dsh-session'
+import type { SessionId } from '@deepseek-ai/dsh-session'
+import type { JsonValue } from '@deepseek-ai/dsh-util-values'
 
 /** Identity of one layer-0 record. */
 export type MemoryRecordId = Branded<'MemoryRecordId'>
@@ -185,6 +186,8 @@ export interface MemoryAttachment {
  * a `verbatim` fidelity claim checkable rather than asserted.
  */
 export interface MemoryProvenance {
+  /** Author of this stored text; independent of whose preference it describes. */
+  readonly author?: 'user' | 'agent' | 'api'
   /** Session that produced the observation. */
   readonly sessionId?: SessionId
   /** Sequence number of the producing session event. */
@@ -273,6 +276,18 @@ export interface MemoryRecord {
   readonly promotedTo: readonly string[]
   /** A `retracted` record stays on the medium for audit but never reaches recall. */
   readonly status: 'active' | 'retracted'
+  /**
+   * A later record that corrected this one, when capture could tell.
+   *
+   * Set by {@link MemoryService.remember} when a user message opens as a
+   * correction ("actually, switch it to minutes") and shares its topic with an
+   * earlier message in the scope. The record stays recallable and ranks on
+   * relevance as before — a superseded decision is still what was said, and
+   * often holds the data its correction acts on — and it carries the link, so
+   * a consumer that wants to can tell which of two conflicting instructions is
+   * the live one without working it out from dates alone.
+   */
+  readonly supersededBy?: MemoryRecordId
 }
 
 /**

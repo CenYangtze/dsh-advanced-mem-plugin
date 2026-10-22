@@ -126,6 +126,8 @@ describe('assert', () => {
     expect(second.confidence).toBeGreaterThan(first.confidence)
     expect(second.summary).toBe('Uses pnpm everywhere.')
     expect(store.nodeRows.size).toBe(1)
+    expect(second.evidence).toHaveLength(2)
+    expect(store.getRecord(first.evidence[0]!)).toMatchObject({ use: 'evidence', provenance: { author: 'api' } })
   })
 
   it('upgrades an inferred belief to asserted when the user confirms it, so it stops fading', async () => {
@@ -405,12 +407,12 @@ describe('belief maintenance', () => {
     await runtime.supersede(outdated.id, replacement.id)
     expect(runtime.store.getNode(outdated.id)?.status).toBe('superseded')
     expect(runtime.store.getNode(outdated.id)?.supersededBy).toBe(replacement.id)
-    const supersedes = [...runtime.store.edges([memoryScopeKey({ kind: 'user' })])]
+    const supersedes = [...runtime.store.edges([memoryScopeKey(workspace)])]
       .filter(edge => edge.relation === 'supersedes')
     expect(supersedes).toHaveLength(1)
   })
 
-  it('forgetting erases the record and drops every citation of it', async () => {
+  it('forgetting erases derived text, incident claims and their generated ledgers', async () => {
     const { runtime } = harness()
     const record = await runtime.remember({
       scope: workspace, kind: 'user-message', text: 'private detail', fidelity: 'verbatim',
@@ -423,10 +425,29 @@ describe('belief maintenance', () => {
       origin: 'inferred',
       evidence: [record.id],
     })
+    const other = await runtime.assert({
+      scope: workspace, type: 'project', label: 'independent', summary: 'An independent project.', origin: 'asserted',
+    })
+    const edge = await runtime.relate({
+      scope: workspace, from: node.id, to: other.id, relation: 'uses', claim: 'The private detail affects this project.', origin: 'inferred',
+    })
     expect(await runtime.forget(record.id)).toBe(true)
     expect(runtime.store.getRecord(record.id)).toBeUndefined()
-    expect(runtime.store.getNode(node.id)?.evidence).toEqual([])
+    expect(runtime.store.getNode(node.id)).toBeUndefined()
+    expect(runtime.store.getEdge(edge.id)).toBeUndefined()
+    expect(runtime.store.getRecord(edge.evidence[0]!)).toBeUndefined()
+    expect(runtime.store.getNode(other.id)).toBeDefined()
     expect(await runtime.forget(record.id)).toBe(false)
+  })
+
+  it('rejects a queued assertion whose cited record was erased first', async () => {
+    const { runtime } = harness()
+    const record = await runtime.remember({ scope: workspace, kind: 'user-message', text: 'private detail', fidelity: 'verbatim' })
+    const forgotten = runtime.forget(record.id)
+    const assertion = runtime.assert({ scope: workspace, type: 'preference', label: 'late', summary: 'private detail', origin: 'inferred', evidence: [record.id] })
+    await expect(forgotten).resolves.toBe(true)
+    await expect(assertion).rejects.toThrow(/active record in the same scope/)
+    expect(runtime.profile([workspace]).nodes).toHaveLength(0)
   })
 })
 

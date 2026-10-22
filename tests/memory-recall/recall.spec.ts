@@ -98,6 +98,14 @@ class TestStore implements MemoryStore {
     return Promise.resolve()
   }
 
+  eraseNode(id: MemoryNodeId): Promise<boolean> {
+    return Promise.resolve(this.nodeRows.delete(id))
+  }
+
+  eraseEdge(id: MemoryEdgeId): Promise<boolean> {
+    return Promise.resolve(this.edgeRows.delete(id))
+  }
+
   eraseRecord(id: MemoryRecordId): Promise<boolean> {
     return Promise.resolve(this.recordRows.delete(id))
   }
@@ -272,7 +280,7 @@ describe('memory-recall', () => {
     for (const line of lines) expect(line).toMatch(/repository\.$/)
   })
 
-  it('sources the injection as plugin context, so capture never re-ingests it', async () => {
+  it('preserves the request-series boundary and identifies injected memory', async () => {
     const ctx = await setup()
     await ctx.memory.assert({
       scope: workspace, type: 'preference', label: 'pnpm', summary: 'Installs with pnpm.', origin: 'asserted',
@@ -282,10 +290,11 @@ describe('memory-recall', () => {
     const decision = await agentEvents(ctx, agent).waterfall(
       'agent/pre-step',
       { messages: [claimed], turn: 1, step: 1, signal: SIGNAL },
-      () => Promise.resolve({ kind: 'enter' as const, messages: [claimed] } satisfies PreStepDecision),
+      () => Promise.resolve({ kind: 'enter' as const, messages: [claimed], startsRequestSeries: true } satisfies PreStepDecision),
     )
     const added = decision.kind === 'enter' ? decision.messages.filter(message => message !== claimed) : []
-    expect(added[0]?.source).toMatchObject({ kind: 'plugin', plugin: 'memory-recall', form: 'snapshot' })
+    expect(added[0]?.source).toMatchObject({ kind: 'memory-recall', form: 'snapshot' })
+    expect(decision.kind === 'enter' && decision.startsRequestSeries).toBe(true)
   })
 
   it('leaves a rejected step rejected', async () => {

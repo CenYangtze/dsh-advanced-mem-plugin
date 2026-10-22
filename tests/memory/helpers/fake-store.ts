@@ -59,6 +59,14 @@ export class FakeMemoryStore implements MemoryStore {
     return Promise.resolve()
   }
 
+  eraseNode(id: MemoryNodeId): Promise<boolean> {
+    return Promise.resolve(this.nodeRows.delete(id))
+  }
+
+  eraseEdge(id: MemoryEdgeId): Promise<boolean> {
+    return Promise.resolve(this.edgeRows.delete(id))
+  }
+
   eraseRecord(id: MemoryRecordId): Promise<boolean> {
     return Promise.resolve(this.recordRows.delete(id))
   }

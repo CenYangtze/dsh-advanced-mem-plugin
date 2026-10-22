@@ -102,6 +102,18 @@ describe('DomainMemoryStore', () => {
     expect([...ctx.memory.store.records(['workspace:/repo' as never])]).toEqual([])
   })
 
+  it('keeps erased belief text absent after closing and reopening the durable domain', async () => {
+    const first = await harness()
+    const node = await first.ctx.memory.assert({ scope: workspace, type: 'preference', label: 'private', summary: 'Private workspace preference.', origin: 'asserted' })
+    expect(await first.ctx.memory.forgetNode(node.id)).toBe(1)
+    await first.ctx.fiber.dispose()
+    const second = await harness(first.directory)
+    expect(second.ctx.memory.store.getNode(node.id)).toBeUndefined()
+    expect(second.ctx.memory.store.getRecord(node.evidence[0]!)).toBeUndefined()
+    expect((await second.ctx.memory.recall({ text: 'private workspace preference', scopes: [workspace], includeEvidence: true })).cues).toHaveLength(0)
+    await second.ctx.fiber.dispose()
+  })
+
   it('moves an item out of its old partition when its scope changes', async () => {
     const { ctx } = await harness()
     const node = await ctx.memory.assert({
