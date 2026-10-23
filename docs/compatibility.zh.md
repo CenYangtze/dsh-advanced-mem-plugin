@@ -15,6 +15,7 @@
 | PTC 工具执行 | 事实证据观察 `tool/ptc-dispatch-start`，经验结果观察已完成的 `tool/ptc-dispatch`。 |
 | 通用 JSON 类型 | 从 `@deepseek-ai/dsh-util-values` 导入 `JsonValue`。 |
 | 会话历史 | 从已提交的 `session/event` 增量捕获任务经验，无需同步读取完整历史。 |
+| 经验提炼 | 读取会话下一次请求的模型选择，通过 `ctx.llm.stream()` 使用宿主管理的认证；可选的宿主默认模型服务提供回退。 |
 | 可选不变量插件 | 通过结构化协议对接宿主提供的 `invariants` 服务；标准 bundle 不挂载该扩展。 |
 
 对应的官方接口见 [Agent 运行时类型](https://github.com/deepseek-ai/deepseek-harness/blob/687f282e8625c6b8d11ff58211a90524be2e4317/packages/core/agent/src/runtime-types.ts)、[PTC 事件类型](https://github.com/deepseek-ai/deepseek-harness/blob/687f282e8625c6b8d11ff58211a90524be2e4317/packages/core/tools/src/types.ts)及[会话读取规范](https://github.com/deepseek-ai/deepseek-harness/blob/687f282e8625c6b8d11ff58211a90524be2e4317/.agents/notes/implemented/architecture/2026-09-09-deprecate-synchronous-session-event-reads.md)。
@@ -50,6 +51,9 @@ dsh --profile web
 | 自动经验捕获 | 工具结果与回合完成事件生成结果为 unknown 的任务轨迹，原始工具参数未进入经验存储 |
 | 捕获期间删除 | 删除来源记录后，进行中的回合被失效，后续结束事件不会重新生成经验 |
 | 经验持久化与删除 | 经验可跨重启保留；删除事实来源后，其派生经验被清除，再次重启仍保持删除结果 |
+| 本机 Web GUI | 在真实界面完成事实写入与搜索、任务采集、结果确认、模型提炼及活跃 Skill 查看 |
+| GUI 跨会话召回 | 重启运行时后，新会话在不调用工具、不读取文件的情况下答出已保存事实和准确 Skill ID；持久事件分别包含 `memory-recall` 与 `experience-memory` 消息 |
+| 原生提炼生命周期 | 流结束、取消、模型切换、可信结果置信度重评、重复提炼稳定性和连续 Skill 替代均已验证 |
 
 Loader 验证组合了官方真实的 session、agent、tools、commands、system-prompt 和 storage 服务，两类记忆域均通过官方 domain 层打开。日常开发继续使用标准质量门禁：
 
@@ -59,6 +63,8 @@ pnpm run check
 ```
 
 连接源码检出前，先构建宿主的 peer 包，使其导出文件和类型声明可用。
+
+本机 GUI 验证使用插件 `0.2.1` 和 Harness 已配置的 DeepSeek-V4.1-Flash。辅助提炼沿用同一提供商路由，无需单独配置经验 API 环境变量。运行时包解析已核对，插件与宿主共享 Cordis、Agent 和 LLM 实例。
 
 ## 事实数据生命周期
 

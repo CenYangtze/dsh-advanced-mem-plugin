@@ -11,9 +11,10 @@ import type { ExperienceDistiller, ExperienceEpisodeInput, ExperienceEnvironment
 import { createOpenAIExperienceDistiller } from '../experience/provider.ts'
 import type {} from '../experience/index.ts'
 import { createTurnCapture } from './capture.ts'
+import { createHarnessExperienceDistiller, resolveExperienceModel } from './llm.ts'
 
 export const name = 'experience-harness'
-export const inject = ['experience', 'memory', 'sessions', 'agents', 'commands', 'tools']
+export const inject = ['experience', 'memory', 'sessions', 'agents', 'commands', 'tools', 'llm']
 
 declare module '@deepseek-ai/dsh-llm' {
   interface MessageSourceMap {
@@ -29,6 +30,7 @@ declare module '@deepseek-ai/cordis' {
 }
 
 export interface Config {
+  extractionMode: 'harness' | 'api'
   captureTurns: boolean
   autoLearn: boolean
   learnEveryTurns: number
@@ -55,6 +57,7 @@ export interface Config {
 }
 
 export const Config: z<Config> = z.object({
+  extractionMode: z.union(['harness', 'api'] as const).required(),
   captureTurns: z.boolean().required(), autoLearn: z.boolean().required(),
   learnEveryTurns: z.number().required(), maxPendingJobs: z.number().required(),
   maxRecall: z.number().required(), maxCharacters: z.number().required(),
@@ -81,14 +84,22 @@ export function apply(ctx: Context, config: Config): void {
   }
   // OS is observed locally; applications and their versions come from deployment policy.
   const env: ExperienceEnvironment = { ...environment, os: process.platform }
-  const endpoint = process.env[config.endpointEnv]
-  const model = process.env[config.modelEnv]
-  const apiKey = process.env[config.apiKeyEnv] ?? ''
-  const distiller: ExperienceDistiller | undefined = endpoint && model ? createOpenAIExperienceDistiller({
-    endpoint, model, apiKey, temperature: config.temperature, maxTokens: config.maxTokens,
-    timeoutMs: config.timeoutMs, maxResponseBytes: config.maxResponseBytes, promptVersion: config.promptVersion,
-    maxInputCharacters: config.maxExtractionInputChars, maxCandidates: ctx.experience.policy.maxCandidatesPerLearn,
-  }) : undefined
+  const extraction = (agent?: Agent, session?: Session): ExperienceDistiller => {
+    const controls = {
+      temperature: config.temperature, maxTokens: config.maxTokens, timeoutMs: config.timeoutMs,
+      maxResponseBytes: config.maxResponseBytes, promptVersion: config.promptVersion,
+      maxInputCharacters: config.maxExtractionInputChars, maxCandidates: ctx.experience.policy.maxCandidatesPerLearn,
+    }
+    if (config.extractionMode === 'api') {
+      const endpoint = process.env[config.endpointEnv]
+      const model = process.env[config.modelEnv]
+      if (!endpoint || !model) throw new Error(`API extraction requires ${config.endpointEnv} and ${config.modelEnv}`)
+      return createOpenAIExperienceDistiller({ ...controls, endpoint, model, apiKey: process.env[config.apiKeyEnv] ?? '' })
+    }
+    const selected = resolveExperienceModel(ctx, agent, session)
+    if (selected.source === 'default') ctx.logger.info('experience-harness: extraction uses the current Harness default model')
+    return createHarnessExperienceDistiller(agent?.ctx ?? ctx, selected.route, controls)
+  }
 
   let chain: Promise<void> = Promise.resolve()
   let pending = 0
@@ -107,18 +118,23 @@ export function apply(ctx: Context, config: Config): void {
       ctx.logger.warn(`experience-harness: background task failed: ${String(error)}`)
     }).finally(() => { pending-- })
   }
-  const learn = async (scope: string, signal?: AbortSignal): Promise<void> => {
-    if (!distiller) return
-    const result = await ctx.experience.memory.learn(scope, distiller, { signal: signal ?? shutdown.signal })
+  const learn = async (scope: string, signal?: AbortSignal, agent?: Agent, session?: Session): Promise<void> => {
+    const distiller = extraction(agent, session)
+    const result = await ctx.experience.memory.learn(scope, distiller, {
+      signal: AbortSignal.any([shutdown.signal, ...(signal ? [signal] : [])]),
+    })
     if (result.skippedEpisodes.length) ctx.logger.warn(`experience-harness: ${result.skippedEpisodes.length} episode(s) exceed the extraction input budget`)
   }
-  const record = async (episode: ExperienceEpisodeInput): Promise<void> => {
+  const record = async (episode: ExperienceEpisodeInput, session?: Session): Promise<void> => {
     if (!ctx.experience.ready) throw new Error('Experience store is not mounted')
     await ctx.experience.memory.record(episode)
     await ctx.experience.memory.maintain(episode.scope)
     const count = (turns.get(episode.scope) ?? 0) + 1
     turns.set(episode.scope, count % config.learnEveryTurns)
-    if (config.autoLearn && count % config.learnEveryTurns === 0) await learn(episode.scope)
+    if (config.autoLearn && count % config.learnEveryTurns === 0) {
+      const agent = session ? ctx.agents.get(session.id) : undefined
+      await learn(episode.scope, undefined, agent, session)
+    }
   }
 
   const capture = createTurnCapture({
@@ -129,12 +145,13 @@ export function apply(ctx: Context, config: Config): void {
   ctx.on('session/event', (session: Session, event: SessionEvent) => {
     if (!config.captureTurns || !ctx.experience.ready) return
     const episode = capture.accept(session, event)
-    if (episode) enqueue(() => record(episode))
+    if (episode) enqueue(() => record(episode, session))
   })
   ctx.on('session/disposed', session => { capture.invalidate(session.id) })
   ctx.on('experience/task-completed', async episode => {
     await chain
-    await record(episode)
+    const agent = episode.sessionId ? ctx.agents.list().find(item => item.session.id === episode.sessionId) : undefined
+    await record(episode, agent?.session)
   })
   // Wait for pending extraction before erasure; no queued job may recreate its evidence.
   ctx.on('memory/before-forget', async record => {
@@ -217,8 +234,7 @@ export function apply(ctx: Context, config: Config): void {
             : JSON.stringify((await memory.snapshot(scope)).skills.find(skill => skill.id === id) ?? null, null, 2)
           break
         case 'learn':
-          if (!distiller) return { kind: 'error', text: `Set ${config.endpointEnv} and ${config.modelEnv} to enable API experience extraction.` }
-          await learn(scope, invocation.signal); text = 'Experience extraction completed.'; break
+          await learn(scope, invocation.signal, invocation.agent); text = 'Experience extraction completed.'; break
         case 'confirm':
           if (!id || !['success', 'failure', 'partial'].includes(extra ?? '')) return { kind: 'error', text: usage }
           const confirmation = await ctx.memory.remember({
@@ -231,7 +247,7 @@ export function apply(ctx: Context, config: Config): void {
             reason: 'User confirmed the task outcome through /experience confirm.',
             evidence: [confirmation.id],
           })
-          if (config.autoLearn) await learn(scope, invocation.signal)
+          if (config.autoLearn) await learn(scope, invocation.signal, invocation.agent)
           text = 'Task outcome confirmed.'; break
         case 'retract':
           if (!id) return { kind: 'error', text: usage }

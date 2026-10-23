@@ -62,6 +62,15 @@ function environmentMatches(constraints: ExperienceEnvironment, environment: Exp
   return Object.entries(constraints).every(([key, value]) => environment[key] === value)
 }
 
+function supportsOutcome(skill: ExperienceSkillContent, episode: ExperienceEpisode): boolean {
+  return environmentMatches(skill.environment, episode.environment) && (skill.kind === 'procedure'
+    ? episode.outcome.status === 'success'
+    : episode.outcome.status === 'failure' || episode.outcome.status === 'partial')
+}
+
+/** This audit marker distinguishes outcome-based reassessment from legacy evidence-only merges. */
+const CONFIDENCE_REASSESSMENT = 'Reassessed extraction confidence from trusted outcomes'
+
 function unique<T>(values: readonly T[]): T[] { return [...new Set(values)] }
 
 function checkTime(at: number): void {
@@ -282,10 +291,7 @@ export class ExperienceMemory {
   private assessment(snapshot: ExperienceSnapshot, skill: ExperienceSkill): { confidence: number; count: number; at: number | null; harmful: number } {
     const episodes = this.supporting(snapshot, skill)
     const trusted = new Map<string, ExperienceEpisode>()
-    const accepted = (episode: ExperienceEpisode): boolean => skill.kind === 'procedure'
-      ? episode.outcome.status === 'success'
-      : episode.outcome.status === 'failure' || episode.outcome.status === 'partial'
-    const eligible = episodes.filter(episode => accepted(episode) && environmentMatches(skill.environment, episode.environment))
+    const eligible = episodes.filter(episode => supportsOutcome(skill, episode))
     for (const episode of eligible.filter(episode => this.trusted(episode))) {
       const key = episode.sessionId ?? this.family(snapshot, episode.id)
       const previous = trusted.get(key)
@@ -369,21 +375,46 @@ export class ExperienceMemory {
       for (const id of candidate.episodeIds) this.episode(snapshot, id)
       const predecessor = candidate.supersedes ? snapshot.skills.find(skill => skill.id === candidate.supersedes) : undefined
       if (candidate.supersedes && !predecessor) throw new ExperienceError('missing-evidence', 'Superseded skill does not exist in this scope')
-      const matches = (skill: ExperienceSkill): boolean => skill.kind === candidate.kind && sameContext(skill, candidate)
+      const candidateFamilies = new Set(candidate.episodeIds.map(id => this.family(snapshot, id)))
+      const preciseMatch = (skill: ExperienceSkill): boolean => skill.kind === candidate.kind && sameContext(skill, candidate)
         && (canonical(contentOf(skill)) === canonical(contentOf(candidate))
           || (similarity(searchText(skill), searchText(candidate)) >= this.policy.duplicateSimilarity
             && canonical(skill.procedure) === canonical(candidate.procedure)
             && canonical(skill.verification) === canonical(candidate.verification)))
-      const terminal = snapshot.skills.find(skill => ['retracted', 'deprecated'].includes(skill.status) && matches(skill))
+      // Ordinary rewording preserves established instructions; explicit successors remain distinct.
+      const sameTaskVariant = (skill: ExperienceSkill): boolean => candidate.supersedes === undefined
+        && skill.kind === candidate.kind && sameContext(skill, candidate)
+        && skill.title.toLowerCase() === candidate.title.toLowerCase()
+        && similarity(searchText(skill), searchText(candidate)) >= this.policy.duplicateSimilarity
+        && [...candidateFamilies].every(family => skill.episodeIds.some(id => this.family(snapshot, id) === family))
+      const terminal = snapshot.skills.find(skill => ['retracted', 'deprecated'].includes(skill.status) && preciseMatch(skill))
       if (terminal) { results.push(terminal); continue }
       const duplicate = snapshot.skills.find(skill => skill.status !== 'retracted' && skill.status !== 'deprecated'
-        && skill.id !== candidate.supersedes && matches(skill))
+        && skill.id !== candidate.supersedes && (preciseMatch(skill) || sameTaskVariant(skill)))
       if (duplicate) {
-        // Repeated extraction contributes only new evidence, never another vote.
-        const merged = { ...duplicate, episodeIds: unique([...duplicate.episodeIds, ...candidate.episodeIds]) }
-        results.push(this.revise(snapshot, duplicate, this.assess(snapshot, merged, now), 'Merged duplicate evidence', now))
+        // A new trusted outcome can correct the extractor's earlier uncertainty.
+        // Legacy evidence-only merge revisions did not reassess this estimate.
+        const assessedIds = new Set(snapshot.revisions.filter(revision => revision.skillId === duplicate.id
+          && (revision.reason === 'Extracted from task evidence' || revision.reason === CONFIDENCE_REASSESSMENT))
+          .flatMap(revision => revision.skill.episodeIds))
+        const newTrustedOutcome = candidate.episodeIds.some(id => {
+          const episode = this.episode(snapshot, id)
+          return !assessedIds.has(id) && this.trusted(episode) && supportsOutcome(duplicate, episode)
+        })
+        const merged = {
+          ...duplicate, episodeIds: unique([...duplicate.episodeIds, ...candidate.episodeIds]),
+          proposedConfidence: newTrustedOutcome ? Math.max(duplicate.proposedConfidence, candidate.confidence) : duplicate.proposedConfidence,
+        }
+        const assessed = this.assess(snapshot, merged, now)
+        // Record consumption even when the proposed confidence stays unchanged.
+        const next = newTrustedOutcome ? { ...assessed, version: duplicate.version + 1 } : assessed
+        results.push(this.revise(snapshot, duplicate, next,
+          newTrustedOutcome ? CONFIDENCE_REASSESSMENT : 'Merged duplicate evidence', now))
         continue
       }
+      // A near match to an ancestor must not mask an already-present successor.
+      const withdrawnVariant = snapshot.skills.find(skill => ['retracted', 'deprecated'].includes(skill.status) && sameTaskVariant(skill))
+      if (withdrawnVariant) { results.push(withdrawnVariant); continue }
       if (predecessor?.supersededBy) throw new ExperienceError('invalid-input', 'Supersede the latest skill in the replacement chain')
       if (snapshot.skills.length >= this.policy.maxSkills) throw new ExperienceError('capacity', 'Experience skill capacity reached; export and explicitly forget material to reclaim it')
       const provisional: ExperienceSkill = {
@@ -399,6 +430,14 @@ export class ExperienceMemory {
       if (conflicts.length && next.status === 'active') {
         next = { ...next, status: 'quarantined', conflictsWith: conflicts.map(skill => skill.id) }
         for (const conflict of conflicts) {
+          const previousTasks = new Set(this.supporting(snapshot, conflict)
+            .map(episode => episode.sessionId ?? this.family(snapshot, episode.id)))
+          const independentSupport = new Set(this.supporting(snapshot, next)
+            .filter(episode => this.trusted(episode) && supportsOutcome(next, episode))
+            .map(episode => episode.sessionId ?? this.family(snapshot, episode.id))
+            .filter(task => !previousTasks.has(task)))
+          // An alternative reading of one task cannot revoke its established skill.
+          if (independentSupport.size < this.policy.minTrustedEpisodes) continue
           this.revise(snapshot, conflict, {
             ...conflict, status: 'quarantined', conflictsWith: unique([...conflict.conflictsWith, next.id]),
           }, 'Conflicting supported procedure requires review', now)

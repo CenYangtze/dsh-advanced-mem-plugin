@@ -170,7 +170,9 @@
         environment: []
         # Empty means use the agent's current tool registry without an extra allowlist.
         availableTools: []
-        # Set these environment variables to enable the OpenAI-compatible API distiller.
+        # Reuse the current Harness model and its registered provider authentication.
+        extractionMode: harness
+        # Used only when extractionMode is explicitly set to api.
         endpointEnv: DSH_EXPERIENCE_ENDPOINT
         modelEnv: DSH_EXPERIENCE_MODEL
         apiKeyEnv: DSH_EXPERIENCE_API_KEY
@@ -180,4 +182,4 @@
         maxResponseBytes: 1048576
         maxExtractionInputChars: 64000
         maxObservationLength: 1000
-        promptVersion: experience-v1
+        promptVersion: experience-v2

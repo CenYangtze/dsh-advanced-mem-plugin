@@ -43,11 +43,13 @@ The supplied `ExperienceEpisodeInput` has a stable id, scope, task, summary, bou
 
 `confirmOutcome` appends an immutable confirmation episode linked by `derivedFrom`. Assessment uses the newest result in that task family. Multiple confirmations of one task, and multiple attempts in one session, do not manufacture independent support.
 
-## API extraction
+## Model-backed extraction
 
-The OpenAI-compatible distiller receives bounded task episodes and relevant existing skills. Its versioned identity records the model and extraction prompt version. The prompt asks for transferable procedures and pitfalls, parameterized incidental details, explicit applicability and observable verification. Success and failure evidence may be compared within the selected batch, following the task-experience approach in [ExpeL](https://arxiv.org/abs/2308.10144) and [ReasoningBank](https://arxiv.org/abs/2509.25140).
+Harness extraction uses the host's `llm` service by default. Each extraction resolves the session's next model selection, including a pending GUI change, followed by the last request, the agent configuration and the host default. Provider authentication remains inside Harness. Extraction runs as an auxiliary model call with no tools and does not add a conversation turn. The explicit `api` mode and the portable API retain the OpenAI-compatible HTTP distiller.
 
-The runtime parses a strict JSON schema and checks scope-local episode citations before accepting proposals. A second check after the API call rejects evidence deleted or changed while extraction was running. Extraction never modifies model weights or requests hidden chain-of-thought. HTTP timeouts, response limits, input budgets and candidate counts are explicit configuration.
+Both distillers receive bounded task episodes and relevant existing skills. Their versioned identity records the model and extraction prompt version. The prompt asks for transferable procedures and pitfalls, parameterized incidental details, explicit applicability and observable verification. Success and failure evidence may be compared within the selected batch, following the task-experience approach in [ExpeL](https://arxiv.org/abs/2308.10144) and [ReasoningBank](https://arxiv.org/abs/2509.25140).
+
+The runtime parses a strict JSON schema and checks scope-local episode citations before accepting proposals. A second check after the model call rejects evidence deleted or changed while extraction was running. Extraction never modifies model weights or requests hidden chain-of-thought. Timeouts, response limits, input budgets and candidate counts are explicit configuration. The Harness stream must finish successfully; truncated, aborted and tool-calling responses are rejected. Cancellation propagates through the host adapter, including plugin shutdown.
 
 ## Skill lifecycle
 
@@ -67,11 +69,11 @@ stateDiagram-v2
   quarantined --> retracted: explicit withdrawal
 ```
 
-**Deduplication.** Equivalent procedure content and context merge supporting episode identities. Near-duplicate matching also requires matching procedure and verification steps, so shared vocabulary cannot merge different operations. Retired instructions are not automatically recreated by ordinary duplicate extraction.
+**Deduplication.** Equivalent procedure content and context merge supporting episode identities. Across independent tasks, near-duplicate matching also requires matching procedure and verification steps. Rewording a highly similar lesson from the same task retains the established instructions. A newly trusted outcome permits one audited reassessment of the extraction confidence; repeated extraction of the same evidence adds no votes. Retired instructions are not automatically recreated by ordinary duplicate extraction.
 
 **Validation and confidence.** Procedure support comes from successful tasks; pitfall support comes from failed or partial tasks. Verified and user-confirmed outcomes may count toward independent support. Model confidence is weighted by outcome evidence; later helpful and harmful feedback changes confidence. Feedback must cite a later independent task in a compatible environment. Repeated feedback for the same task is rejected or handled idempotently.
 
-**Versioning and conflicts.** A changed skill creates a revision. Explicit `supersedes` links retain the old procedure until the replacement is validated. Conflicting procedures with the same title and context are quarantined for review. Replacement and retraction are visible lifecycle operations.
+**Versioning and conflicts.** A changed skill creates a revision. Explicit `supersedes` links retain the old procedure until the replacement is validated. A conflicting proposal with the same title and context is quarantined for review. Quarantining the established procedure additionally requires independent trusted task evidence; another interpretation of the same task cannot withdraw it. Replacement and retraction are visible lifecycle operations.
 
 **Expiry.** An active skill's validity is tied to its last trusted evidence. Candidate validity is tied to its creation time. Retrieval checks expiry directly; maintenance persists state transitions. Ordinary duplicate extraction does not revive expired or quarantined procedures.
 

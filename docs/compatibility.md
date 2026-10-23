@@ -15,6 +15,7 @@ The bundle uses the host's Cordis instance and registries through peer dependenc
 | PTC tool execution | Observe `tool/ptc-dispatch-start` for factual evidence and completed `tool/ptc-dispatch` events for experience outcomes. |
 | Shared JSON types | Import `JsonValue` from `@deepseek-ai/dsh-util-values`. |
 | Session history | Capture experience incrementally from committed `session/event` events; no synchronous historical Session reader is required. |
+| Experience extraction | Resolve the session's next model selection and call `ctx.llm.stream()` with host-managed authentication; the optional host default-model service supplies the fallback. |
 | Optional invariant companion | Use a structural registry protocol for hosts providing an `invariants` service. The standard bundle does not mount this companion. |
 
 The corresponding host contracts are in [agent runtime types](https://github.com/deepseek-ai/deepseek-harness/blob/687f282e8625c6b8d11ff58211a90524be2e4317/packages/core/agent/src/runtime-types.ts), [PTC event types](https://github.com/deepseek-ai/deepseek-harness/blob/687f282e8625c6b8d11ff58211a90524be2e4317/packages/core/tools/src/types.ts), and the [Session read policy](https://github.com/deepseek-ai/deepseek-harness/blob/687f282e8625c6b8d11ff58211a90524be2e4317/.agents/notes/implemented/architecture/2026-09-09-deprecate-synchronous-session-event-reads.md).
@@ -50,6 +51,9 @@ Compatibility was checked on Windows with Node `24.14.0`, using an independent c
 | Automatic experience capture | A completed tool result and turn produced an episode with an unknown outcome; raw tool arguments were absent |
 | Erasure during capture | Erasing a source invalidated the active turn; its later completion did not recreate an episode |
 | Experience persistence and erasure | Episodes survived a fresh boot; erasing a factual source removed its dependent episode, including after another restart |
+| Installed Web GUI | Factual writes and searches, task capture, outcome confirmation, model-backed extraction and active-skill inspection passed through the real interface |
+| Cross-session GUI recall | After a runtime restart, a fresh session answered with the stored fact and exact Skill ID without tools or file reads; durable events contained distinct `memory-recall` and `experience-memory` messages |
+| Native extraction lifecycle | Verified stream completion, cancellation, model selection changes, trusted-outcome confidence reassessment, duplicate stability and successive skill replacement |
 
 The Loader verification composed the real host session, agent, tools, commands, system-prompt, and storage services. Both memory domains opened through the official domain facility. The standard development gate remains:
 
@@ -59,6 +63,8 @@ pnpm run check
 ```
 
 Build the host's peer packages before linking a source checkout, so its package export targets and declarations are available.
+
+The installed-GUI verification used plugin `0.2.1` and the Harness-configured DeepSeek-V4.1-Flash model. Auxiliary extraction used the same provider route without separate experience API variables. Runtime package resolution was checked to share the host's Cordis, Agent and LLM instances.
 
 ## Factual data lifecycle
 
