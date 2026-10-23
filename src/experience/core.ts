@@ -1,12 +1,13 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { bm25Rank, rankScore, similarity, tokenize } from '../memory/scoring.ts'
 import { serializeExperienceDistillation } from './payload.ts'
+import { experienceOutcomeReceiptId, validateExperienceOutcomeFeedback, validateExperienceToolOutcome } from './outcome.ts'
 import {
   ExperienceCandidateSchema, ExperienceEpisodeInputSchema, ExperienceFeedbackInputSchema,
   ExperienceOutcomeSchema, ExperienceSnapshotSchema,
 } from './schema.ts'
 import type {
-  ExperienceCandidate, ExperienceDistiller, ExperienceEnvironment, ExperienceEpisode, ExperienceEpisodeInput,
+  ExperienceCandidate, ExperienceConfirmationOptions, ExperienceDistiller, ExperienceEnvironment, ExperienceEpisode, ExperienceEpisodeInput,
   ExperienceFeedback, ExperienceFeedbackInput, ExperienceForgetReport, ExperienceForgetTarget,
   ExperienceLearnResult, ExperienceMaintenanceReport, ExperienceOutcome, ExperiencePolicy,
   ExperienceRecallHit, ExperienceRecallQuery, ExperienceRevision, ExperienceSkill, ExperienceSkillContent,
@@ -101,7 +102,7 @@ export class ExperienceMemory {
     for (const key of ['minTrustedEpisodes', 'maxEpisodes', 'maxSkills', 'maxTextLength', 'maxSteps', 'maxItemsPerField', 'maxCandidatesPerLearn', 'maxEpisodesPerLearn', 'maxExistingSkillsPerLearn', 'maxDistillationCharacters', 'maxRecall'] as const) {
       if (!Number.isSafeInteger(policy[key]) || policy[key] <= 0) throw new ExperienceError('invalid-input', `${key} must be a positive integer`)
     }
-    for (const key of ['minConfidence', 'duplicateSimilarity', 'verifiedOutcomeWeight', 'userOutcomeWeight', 'modelOutcomeWeight', 'unknownOutcomeWeight'] as const) {
+    for (const key of ['minConfidence', 'minOutcomeConfidence', 'duplicateSimilarity', 'verifiedOutcomeWeight', 'toolEvidenceOutcomeWeight', 'userOutcomeWeight', 'modelOutcomeWeight', 'unknownOutcomeWeight'] as const) {
       if (!Number.isFinite(policy[key]) || policy[key] < 0 || policy[key] > 1) throw new ExperienceError('invalid-input', `${key} must be in [0, 1]`)
     }
     for (const key of ['skillTtlMs', 'candidateTtlMs'] as const) {
@@ -174,6 +175,7 @@ export class ExperienceMemory {
 
   async record(input: ExperienceEpisodeInput): Promise<ExperienceEpisode> {
     const episode = ExperienceEpisodeInputSchema.parse(input)
+    validateExperienceToolOutcome(episode, this.policy)
     this.bounded(episode)
     if (episode.steps.length > this.policy.maxSteps) throw new ExperienceError('invalid-input', 'Episode exceeds maxSteps')
     if (Object.keys(episode.environment).length > this.policy.maxItemsPerField) throw new ExperienceError('invalid-input', 'Too many environment constraints')
@@ -193,28 +195,66 @@ export class ExperienceMemory {
     if (episode.derivedFrom !== undefined && !snapshot.episodes.some(item => item.id === episode.derivedFrom)) {
       throw new ExperienceError('missing-evidence', 'Confirmation source episode does not exist')
     }
+    if (episode.taskContext?.previousEpisodeId !== undefined
+      && !snapshot.episodes.some(item => item.id === episode.taskContext!.previousEpisodeId)) {
+      throw new ExperienceError('missing-evidence', 'Task predecessor does not exist in this scope')
+    }
+    if (episode.taskContext?.previousEpisodeId !== undefined && episode.outcome.source === 'tool-evidence') {
+      const previous = this.episode(snapshot, episode.taskContext.previousEpisodeId)
+      const previousSequence = Math.max(-1, ...previous.steps.flatMap(step => step.evidence ? [step.evidence.seq] : []))
+      if (!episode.steps.some(step => step.evidence && episode.outcome.evidence.includes(step.evidence.id)
+        && step.evidence.seq > previousSequence && ['check', 'readback'].includes(step.evidence.role))) {
+        throw new ExperienceError('invalid-input', 'A new task checkpoint requires fresh verification after its predecessor evidence')
+      }
+    }
     snapshot.episodes.push(episode)
     return episode
   }
 
   /** Confirmation adds an immutable observation and re-evaluates its descendants. */
-  async confirmOutcome(scope: string, episodeId: string, input: ExperienceOutcome): Promise<ExperienceEpisode> {
+  async confirmOutcome(scope: string, episodeId: string, input: ExperienceOutcome, options: ExperienceConfirmationOptions = {}): Promise<ExperienceEpisode> {
+    options.signal?.throwIfAborted()
     const outcome = ExperienceOutcomeSchema.parse(input)
     this.bounded(outcome)
-    if (!['user', 'verified'].includes(outcome.source) || !outcome.evidence.length) {
-      throw new ExperienceError('invalid-input', 'Confirmation requires a user or verified outcome with evidence')
+    if (!['user', 'verified', 'tool-evidence'].includes(outcome.source) || !outcome.evidence.length) {
+      throw new ExperienceError('invalid-input', 'Confirmation requires a user, verified or validated tool-evidence outcome')
     }
     return this.mutate(scope, snapshot => {
+      options.signal?.throwIfAborted()
       const source = this.episode(snapshot, episodeId)
       const latest = this.latest(snapshot, source.id)
-      if (canonical(latest.outcome) === canonical(outcome)) return latest
-      const id = `confirmation:${createHash('sha256').update(canonical({ episodeId: latest.id, outcome })).digest('hex')}`
+      const family = this.family(snapshot, source.id)
+      let confirmed = outcome
+      if (outcome.source === 'tool-evidence') {
+        validateExperienceToolOutcome({ ...source, outcome, evidence: unique([...source.evidence, ...outcome.evidence]) }, this.policy)
+        const receipt = experienceOutcomeReceiptId(snapshot.scope, family, outcome.status, outcome.evidence)
+        const prior = snapshot.episodes.filter(item => this.family(snapshot, item.id) === family && item.outcome.source === 'tool-evidence')
+        const sameId = prior.find(item => item.outcome.assessment?.id === outcome.assessment!.id)
+        if (sameId && experienceOutcomeReceiptId(snapshot.scope, family, sameId.outcome.status, sameId.outcome.evidence) !== receipt) {
+          throw new ExperienceError('identity-conflict', 'Assessment identity already belongs to different verification evidence')
+        }
+        // Return the latest correction, not an older receipt, when a retry arrives after a user decision.
+        if (prior.some(item => experienceOutcomeReceiptId(snapshot.scope, family, item.outcome.status, item.outcome.evidence) === receipt)) return latest
+        confirmed = { ...outcome, assessment: { ...outcome.assessment!, id: receipt } }
+      }
+      if (options.expectedLatestEpisodeId !== undefined && options.expectedLatestEpisodeId !== latest.id) {
+        throw new ExperienceError('identity-conflict', 'Task outcome changed while its assessment was running')
+      }
+      if (options.expectedTaskRevision !== undefined) {
+        const context = source.taskContext
+        const currentRevision = Math.max(-1, ...snapshot.episodes.filter(item => item.taskContext?.id === context?.id)
+          .flatMap(item => item.taskContext ? [item.taskContext.revision] : []))
+        if (!context || context.revision !== options.expectedTaskRevision || currentRevision !== options.expectedTaskRevision) {
+          throw new ExperienceError('identity-conflict', 'Task requirements changed while its assessment was running')
+        }
+      }
+      if (canonical(latest.outcome) === canonical(confirmed)) return latest
+      const id = `confirmation:${createHash('sha256').update(canonical({ episodeId: latest.id, outcome: confirmed })).digest('hex')}`
       const now = Date.now()
       const confirmation = this.appendEpisode(snapshot, {
-        ...source, id, derivedFrom: latest.id, outcome, learnedBy: [], completedAt: now,
-        evidence: unique([...source.evidence, ...outcome.evidence]),
+        ...source, id, derivedFrom: latest.id, outcome: confirmed, learnedBy: [], completedAt: now,
+        evidence: unique([...source.evidence, ...confirmed.evidence]),
       })
-      const family = this.family(snapshot, source.id)
       for (const skill of [...snapshot.skills]) {
         const supports = skill.episodeIds.some(id => this.family(snapshot, id) === family)
         const validates = snapshot.feedback.some(feedback => feedback.skillId === skill.id
@@ -264,6 +304,7 @@ export class ExperienceMemory {
   private outcomeWeight(episode: ExperienceEpisode): number {
     switch (episode.outcome.source) {
       case 'verified': return this.policy.verifiedOutcomeWeight
+      case 'tool-evidence': return this.policy.toolEvidenceOutcomeWeight
       case 'user': return this.policy.userOutcomeWeight
       case 'model': return this.policy.modelOutcomeWeight
       case 'unknown': return this.policy.unknownOutcomeWeight
@@ -271,8 +312,13 @@ export class ExperienceMemory {
   }
 
   private trusted(episode: ExperienceEpisode): boolean {
-    return (episode.outcome.source === 'verified' || episode.outcome.source === 'user')
+    return ['verified', 'tool-evidence', 'user'].includes(episode.outcome.source)
       && episode.outcome.evidence.length > 0 && this.outcomeWeight(episode) > 0
+      && (episode.outcome.source !== 'tool-evidence' || episode.outcome.assessment!.confidence >= this.policy.minOutcomeConfidence)
+  }
+
+  private validationTime(episode: ExperienceEpisode): number {
+    return episode.outcome.source === 'tool-evidence' ? episode.outcome.assessment!.observedAt : episode.completedAt
   }
 
   /** A later confirmation supersedes the judgement, while all provenance remains. */
@@ -295,7 +341,7 @@ export class ExperienceMemory {
     for (const episode of eligible.filter(episode => this.trusted(episode))) {
       const key = episode.sessionId ?? this.family(snapshot, episode.id)
       const previous = trusted.get(key)
-      if (!previous || episode.completedAt > previous.completedAt) trusted.set(key, episode)
+      if (!previous || this.validationTime(episode) > this.validationTime(previous)) trusted.set(key, episode)
     }
     let helpful = 0
     let harmful = 0
@@ -321,7 +367,7 @@ export class ExperienceMemory {
     const confidence = (skill.proposedConfidence * evidenceWeight * prior + helpful) / (prior + helpful + harmful)
     return {
       confidence, count: trusted.size, harmful,
-      at: trusted.size ? Math.max(...[...trusted.values()].map(episode => episode.completedAt)) : null,
+      at: trusted.size ? Math.max(...[...trusted.values()].map(episode => this.validationTime(episode))) : null,
     }
   }
 
@@ -454,6 +500,15 @@ export class ExperienceMemory {
     return this.mutate(scope, snapshot => this.addCandidates(snapshot, validated, Date.now()))
   }
 
+  /** Requirement-only checkpoints preserve context but supply no new procedural experience. */
+  private hasTaskExecution(snapshot: ExperienceSnapshot, episode: ExperienceEpisode): boolean {
+    if (!episode.taskContext) return true
+    if (!episode.steps.length) return false
+    const previous = episode.taskContext.previousEpisodeId === undefined ? undefined : this.episode(snapshot, episode.taskContext.previousEpisodeId)
+    const previousSequence = Math.max(-1, ...(previous?.steps ?? []).flatMap(step => step.evidence ? [step.evidence.seq] : []))
+    return episode.steps.some(step => step.evidence === undefined || step.evidence.seq > previousSequence)
+  }
+
   /** Extraction runs outside the write queue; provenance is checked again at commit. */
   async learn(scope: string, distiller: ExperienceDistiller, options: { readonly episodeIds?: readonly string[]; readonly signal?: AbortSignal } = {}): Promise<ExperienceLearnResult> {
     this.bounded(distiller.name)
@@ -461,8 +516,8 @@ export class ExperienceMemory {
     options.signal?.throwIfAborted()
     const before = await this.snapshot(scope)
     const available = options.episodeIds === undefined
-      ? before.episodes.filter(episode => !episode.learnedBy.includes(distiller.name))
-      : unique(options.episodeIds).map(id => this.episode(before, id)).filter(episode => !episode.learnedBy.includes(distiller.name))
+      ? before.episodes.filter(episode => !episode.learnedBy.includes(distiller.name) && this.hasTaskExecution(before, episode))
+      : unique(options.episodeIds).map(id => this.episode(before, id)).filter(episode => !episode.learnedBy.includes(distiller.name) && this.hasTaskExecution(before, episode))
     if (!available.length) return { episodes: [], skills: [], skippedEpisodes: [] }
     const fits = (episodes: readonly ExperienceEpisode[], existing: readonly ExperienceSkill[]): boolean =>
       serializeExperienceDistillation({ scope: before.scope, episodes, existing }).length <= this.policy.maxDistillationCharacters
@@ -524,6 +579,20 @@ export class ExperienceMemory {
         return skill
       }
       const episode = this.latest(snapshot, feedback.episodeId)
+      if (feedback.attribution) {
+        const proofEpisode = this.episode(snapshot, feedback.episodeId)
+        if (skill.status !== 'active' || skill.version !== feedback.attribution.skillVersion
+          || proofEpisode.outcome.assessment?.id !== feedback.attribution.assessmentId
+          || proofEpisode.id !== episode.id || feedback.verdict === 'irrelevant') {
+          throw new ExperienceError('invalid-input', 'Automatic feedback must cite the current applied skill and task assessment')
+        }
+        const accepted = validateExperienceOutcomeFeedback([{
+          skillId: feedback.skillId, version: feedback.attribution.skillVersion,
+          verdict: feedback.verdict, reason: feedback.reason,
+          actionEvidence: feedback.attribution.actionEvidence, verificationEvidence: feedback.attribution.verificationEvidence,
+        }], proofEpisode, [skill], this.policy)
+        if (!accepted.length) throw new ExperienceError('invalid-input', 'Automatic feedback lacks verified application and outcome evidence')
+      }
       if (snapshot.feedback.some(item => item.skillId === skill.id && this.family(snapshot, item.episodeId) === this.family(snapshot, episode.id))) {
         throw new ExperienceError('identity-conflict', 'This task already provided feedback for this skill')
       }
@@ -625,6 +694,7 @@ export class ExperienceMemory {
         changed = false
         for (const episode of snapshot.episodes) {
           if (episode.derivedFrom && episodes.has(episode.derivedFrom) && !episodes.has(episode.id)) { episodes.add(episode.id); changed = true }
+          if (episode.taskContext?.previousEpisodeId && episodes.has(episode.taskContext.previousEpisodeId) && !episodes.has(episode.id)) { episodes.add(episode.id); changed = true }
         }
         for (const skill of snapshot.skills) {
           if (skills.has(skill.id)) continue

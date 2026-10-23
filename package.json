@@ -1,6 +1,6 @@
 {
   "name": "dsh-advanced-mem-plugin",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "Factual and experience memory for DeepSeek Harness, with outcome-grounded skills, lifecycle management and API benchmark adapters",
   "keywords": [
     "deepseek-harness",
@@ -76,7 +76,10 @@
       "default": "./lib/evaluation/index.js"
     },
     "./cordis.patch.yml": "./cordis.patch.yml",
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./client": {
+      "default": "./lib/experience-harness/client.js"
+    }
   },
   "files": [
     "lib/**/*.js",
@@ -91,11 +94,20 @@
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-ui-plugin-manager",
+        "@deepseek-ai/dsh-api-remotes"
+      ]
     }
   },
   "scripts": {
-    "build": "tsdown",
-    "prepare": "tsdown",
+    "build": "tsdown && tsdown --config tsdown.client.config.ts",
+    "prepare": "tsdown && tsdown --config tsdown.client.config.ts",
     "verify": "node scripts/verify-bundle.mjs",
     "link-harness": "node scripts/link-harness.mjs",
     "typecheck": "tsc --noEmit",
@@ -119,12 +131,27 @@
     "@deepseek-ai/dsh-system-prompt": "*",
     "@deepseek-ai/dsh-tools": "*",
     "@deepseek-ai/dsh-util-values": "*",
-    "@deepseek-ai/schemastery": "*"
+    "@deepseek-ai/schemastery": "*",
+    "@deepseek-ai/dsh-credentials": "*",
+    "@deepseek-ai/dsh-settings": "*",
+    "@deepseek-ai/dsh-client-locale": "*",
+    "@deepseek-ai/dsh-client-ui-settings": "*",
+    "@deepseek-ai/dsh-client-ui-plugin-manager": "*",
+    "@deepseek-ai/dsh-api-remotes": "*",
+    "@deepseek-ai/dsh-client-ui-slots": "*",
+    "@deepseek-ai/dsh-client-ui-renderer": "*",
+    "react": "^18.3.0 || ^19.0.0"
   },
   "devDependencies": {
     "@types/node": "^22.20.0",
     "tsdown": "^0.22.2",
     "typescript": "^6.0.3",
-    "vitest": "^4.1.8"
+    "vitest": "^4.1.8",
+    "@types/react": "^19.0.0"
+  },
+  "peerDependenciesMeta": {
+    "react": {
+      "optional": true
+    }
   }
 }

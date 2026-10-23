@@ -8,44 +8,44 @@ Cross-session **factual and experience memory** for [DeepSeek Harness](https://g
 flowchart LR
   L[Committed session log] --> F[Factual records and graph]
   L --> E[Task episodes and outcomes]
-  E --> D[Harness model experience extraction]
+  E --> C[Multi-turn requirement consolidation]
+  C --> V[Independent outcome assessment]
+  V --> D[Experience extraction]
   D --> S[Versioned procedure and pitfall skills]
   F --> FR[Factual recall]
   S --> ER[Environment and tool matched recall]
   FR --> T[Next agent turn]
   ER --> T
-  V[Evaluator or user confirmation] --> E
-  T --> V
+  T --> L
 ```
 
 The factual channel remembers what is known about the user and workspace. The experience channel remembers how to complete a class of tasks, under which conditions, and how to check the result. Separate storage, provenance rules and recall budgets keep these meanings distinct.
 
 ## Compatibility and installation
 
-Plugin **0.2.1** supports **DeepSeek Harness `dsh-v0.2.1-rc.2`**, official commit [`687f282e`](https://github.com/deepseek-ai/deepseek-harness/commit/687f282e8625c6b8d11ff58211a90524be2e4317). See the [compatibility report](docs/compatibility.md) for the verified API changes and checks. Use the Node version required by that Harness release. The standard `web` profile supplies the model, storage and agent services used by the bundle.
+Plugin **0.3.0** targets **DeepSeek Harness `dsh-v0.2.1-rc.2`**, official commit [`687f282e`](https://github.com/deepseek-ai/deepseek-harness/commit/687f282e8625c6b8d11ff58211a90524be2e4317). See the [compatibility report](docs/compatibility.md) for the verified API changes and checks. Use the Node version required by that Harness release. The standard `web` profile supplies the model, storage and agent services used by the bundle.
 
 ```sh
 npm install -g @deepseek-ai/dsh@0.2.1-rc.2
-dsh plugin --profile web add github:CenYangtze/dsh-advanced-mem-plugin#master
-dsh --profile web --dump-config
+dsh plugin --profile web add ./dsh-advanced-mem-plugin-0.3.0.tgz
 dsh web
 ```
 
-`dsh web` starts the local GUI and automatically opens an authenticated browser URL containing an access token. The default local address is [http://127.0.0.1:3080](http://127.0.0.1:3080); use the tab opened by the launcher. Configure your provider in Harness and select a model in the conversation. Experience extraction uses that selection and the provider authentication already managed by Harness.
+`dsh web` starts the local GUI and automatically opens an authenticated browser URL containing an access token. The default local address is [http://127.0.0.1:3080](http://127.0.0.1:3080); use the tab opened by the launcher. Configure a provider in **Settings → Models**, then open a workspace session and select its model. Task understanding, outcome assessment and experience extraction use that selection and the authentication already managed by Harness. Complete a task with a final test or artifact readback, then inspect `/experience list`; follow-up requirements can stay in the same session.
 
-Git installation builds `lib/` with the package's `prepare` script. If pnpm requests build approval, add the package to the profile's `pnpm-workspace.yaml`, then repeat installation:
+A pinned Git revision can also be installed with `dsh plugin --profile web add github:CenYangtze/dsh-advanced-mem-plugin#<commit>`. Git installation builds `lib/` with the package's `prepare` script. If pnpm requests build approval, add the package to the profile's `pnpm-workspace.yaml`, then repeat installation:
 
 ```yaml
 allowBuilds:
   dsh-advanced-mem-plugin: true
 ```
 
-A prebuilt package can also be installed:
+To build and install the release archive from source:
 
 ```sh
 pnpm run build
 pnpm pack
-dsh plugin --profile web add ./dsh-advanced-mem-plugin-0.2.1.tgz
+dsh plugin --profile web add ./dsh-advanced-mem-plugin-0.3.0.tgz
 ```
 
 The shipped patch mounts ten plugin rows. The feature-hash embedding provider is available as an optional entry point; the default factual retrieval uses lexical ranking and graph activation. All Harness packages remain peers and are resolved from the host installation.
@@ -64,17 +64,26 @@ The semantic graph keeps source-record citations, confidence, support, decay and
 
 ## Learn and use experience
 
-The default `extractionMode: harness` reuses the current conversation's **provider, model and authentication** through the Harness LLM service. Setup requires no additional experience API environment variables. Model selection is read for each extraction, so a model change in the GUI applies to subsequent learning. Sessions without a selected route use the current Harness default model.
+The default `modelSettings.mode: inherit` with `extractionMode: harness` follows the current session's **provider, model and authentication**. No additional experience API configuration is required. Requirement consolidation, outcome assessment and skill extraction run as separate auxiliary requests through the host LLM service, with explicit budgets and no tools. A model change applies to subsequent memory requests; sessions without a selected route use the Harness default model.
 
-Automatic extraction runs after each captured task with the shipped configuration. `/experience learn` starts extraction on demand, and `/experience confirm` records the outcome before triggering learning. These auxiliary requests have their own input, output and timeout budgets and carry no tool permissions.
+A task can span planning, implementation, correction and additional requirements. The model consolidates the original user requests into versioned `taskContext` checkpoints, preserving requirements that still apply and interpreting temporary instructions within their stated scope. Original requests govern consolidation: the model corrects added conditions in earlier summaries and keeps required results distinct from explicitly requested implementation methods. Planning rounds preserve context; executable experience is extracted after tool work. A new increment is assessed against fresh verification after its final changes.
 
-The observer captures bounded visible actions and results, including nested PTC dispatches. It retains no raw tool arguments or hidden reasoning. A completed Harness turn has an **unknown task outcome**. An application evaluator can submit a verified task via `experience/task-completed`; a person can confirm a captured task:
+The shipped policy enables `autoConfirm`, `autoLearn` and `autoFeedback`. The observer captures visible actions and results from committed events, including nested PTC dispatches. An independent assessment checks every material acceptance criterion against exact quotations from complete tests or artifact readbacks. Runtime checks enforce evidence identity, execution order, coverage and confidence before accepting a `tool-evidence` outcome. A turn boundary or an assistant's completion claim alone leaves the result unknown.
+
+Auxiliary assessment selects evidence by event ID and line range; the runtime restores and stores the exact source quotation, while ordinary recall keeps procedures and compact source counts.
+
+A completed text readback with intact tool metadata and execution order can be shortened to fit the local capture budget while preserving the execution trace. Its shortened content provides background only; final confirmation uses complete checks or readbacks after the last possible state change.
+
+Tasks with unresolved requirements, incomplete evidence or an unavailable assessment remain pending. Use `/experience pending` to inspect the reason. Service or response-parsing failures with complete evidence receive bounded maintenance retries; `/experience assess <episode-id>` re-examines the existing evidence immediately with the configured model. Substantive uncertainty is kept visible rather than repeatedly reassessed. Continue the task with new verification, or explicitly confirm a result you have checked. A host evaluator can submit a verified task through `experience/task-completed`.
 
 ```text
 /experience list
+/experience pending
+/experience assess <episode-id>
 /experience confirm <episode-id> success
 /experience learn
 /experience show <skill-id>
+/experience sources <skill-id>
 /experience export <skill-id>
 /experience retract <skill-id>
 /experience forget episode <episode-id>
@@ -83,45 +92,25 @@ The observer captures bounded visible actions and results, including nested PTC 
 /experience maintain
 ```
 
-Extraction produces structured procedures and pitfalls: applicability, preconditions, ordered steps, cautions, verification, required tools, environment constraints and source episodes. Active skills must meet the configured confidence and independently supported outcome thresholds. Model-generated success claims alone do not activate a skill.
+Manual confirmation also accepts `failure` and `partial`, and persists the user's confirmation as source evidence. Extraction produces procedures and pitfalls with applicability, preconditions, steps, cautions, verification, required tools, environment constraints and source episodes. Active skills meet the configured confidence and independently supported outcome thresholds.
 
-Recall selects active, unexpired skills matching the current task, exact environment constraints and the agent's available tools. It adds a separate experience block once per turn. Recalled procedures guide planning; the host's current instructions, tool permissions and approval policies continue to govern execution. Export produces a Harness-compatible `SKILL.md` with YAML name and description, lifecycle metadata and source references. Save it under `.agents/skills/<exported-name>/SKILL.md` when you choose to install it as a workspace skill.
+Recall selects active, unexpired skills matching the task, environment and available tools. Each turn receives a compact procedural block with source counts. The model can call `experience_inspect` to expand the skill, its source index grouped by session, or a selected episode's quoted verification. `/experience sources` exposes the same source index to the user. Host instructions, permissions and approval policies continue to govern execution.
 
-### Use a separate extraction API
+Export produces a Harness-compatible `SKILL.md` with YAML name and description, lifecycle metadata and source references. Save it under `.agents/skills/<exported-name>/SKILL.md` when you choose to install it as a workspace skill.
 
-For a dedicated extraction model, set `extractionMode: api` in the profile's `cordis.patch.yml` and define the endpoint, model and key in the shell that starts Harness. `DSH_EXPERIENCE_ENDPOINT` is the complete OpenAI-compatible **chat/completions** URL. A local unauthenticated API may leave the key empty.
+### Choose a memory model
 
-Profile patches replace a row's **entire `config`**. Add this complete override for the `experience-harness` row, retaining any deployment values you have customized:
+The plugin's **Memory model** configuration page provides three choices:
 
-```yaml
-- id: experience-harness
-  config:
-    captureTurns: true
-    autoLearn: true
-    learnEveryTurns: 1
-    maxPendingJobs: 32
-    maxRecall: 3
-    maxCharacters: 5000
-    recallTimeoutMs: 250
-    viewLimit: 20
-    excludedTools: []
-    transportTools: [run_code]
-    environment: []
-    availableTools: []
-    extractionMode: api
-    endpointEnv: DSH_EXPERIENCE_ENDPOINT
-    modelEnv: DSH_EXPERIENCE_MODEL
-    apiKeyEnv: DSH_EXPERIENCE_API_KEY
-    temperature: 0
-    maxTokens: 4096
-    timeoutMs: 60000
-    maxResponseBytes: 1048576
-    maxExtractionInputChars: 64000
-    maxObservationLength: 1000
-    promptVersion: experience-v2
-```
+| Mode | Behavior |
+|---|---|
+| `inherit` — Follow the current session | Use the session's provider/model and the Harness default when no session is available. |
+| `harness` — Choose another Harness model | Select a configured provider and model for memory processing, with optional reasoning effort; authentication stays with Harness. |
+| `api` — Use an independent API | Supply a complete OpenAI-compatible `chat/completions` endpoint, model and optional credential reference. |
 
-For PowerShell:
+Save the selection to apply it to subsequent memory requests. The API-key input writes through the host credential service; plugin configuration stores its reference. Leaving the key input blank keeps the saved credential.
+
+Environment-based API deployments remain supported. Copy the complete `experience-harness` row configuration from [cordis.patch.yml](cordis.patch.yml) into the profile override, set `extractionMode: api`, and keep `modelSettings.mode: inherit`. Profile patches replace the entire `config`, so retain all other fields and your deployment values. Then provide the endpoint, model and credential in the environment used to start Harness:
 
 ```powershell
 $env:DSH_EXPERIENCE_ENDPOINT = 'https://your-provider.example/v1/chat/completions'
@@ -130,16 +119,7 @@ $env:DSH_EXPERIENCE_API_KEY = 'your-api-key'
 dsh web
 ```
 
-For Bash or Zsh:
-
-```sh
-export DSH_EXPERIENCE_ENDPOINT=https://your-provider.example/v1/chat/completions
-export DSH_EXPERIENCE_MODEL=your-model
-export DSH_EXPERIENCE_API_KEY=your-api-key
-dsh web
-```
-
-The `web` profile patch lives at `$DSH_HOME/profiles/web/cordis.patch.yml`, with `DSH_HOME` defaulting to `~/.dsh`. To return to the conversation model, set `extractionMode: harness` in the complete row config. The standalone TypeScript extraction provider remains available for applications and evaluation runners that supply their own API connection.
+Bash and Zsh use `export NAME=value` for the same variables. A local unauthenticated API may leave the key empty. An explicit environment-based API deployment keeps that selection in `inherit` mode. The `web` profile patch lives at `$DSH_HOME/profiles/web/cordis.patch.yml`, with `DSH_HOME` defaulting to `~/.dsh`. To follow the session again, restore `extractionMode: harness` in the complete row config.
 
 ## Lifecycle and deployment policy
 
@@ -147,7 +127,7 @@ The `web` profile patch lives at `$DSH_HOME/profiles/web/cordis.patch.yml`, with
 |---|---|
 | Deduplicate | Merge new supporting episodes into an equivalent procedure; repeated extraction adds no extra vote. |
 | Validate | Record evaluator or user confirmation as an immutable episode; retain the earlier outcome. |
-| Apply feedback | Accept feedback from a later independent task; update confidence and isolate repeatedly harmful skills. |
+| Apply feedback | Attribute later independent task actions and final verification to the exact recalled skill version, then update confidence and isolate repeatedly harmful skills. |
 | Replace | Activate an evidence-backed successor and retain the predecessor and version history. |
 | Expire | Filter expired skills during retrieval, even before maintenance runs. |
 | Retract | Keep a tombstone and audit history. |
@@ -155,6 +135,8 @@ The `web` profile patch lives at `$DSH_HOME/profiles/web/cordis.patch.yml`, with
 | Reach capacity | Reject additional writes explicitly; reclaim space through export and deliberate erasure. |
 
 Every policy value is explicit in [cordis.patch.yml](cordis.patch.yml). Override a row by its `id` in the profile patch and supply its complete `config`; copy the corresponding shipped row before changing individual values. Profile overrides replace that config rather than merging its fields. Configure `environment` entries such as `browser=chromium` and `application=libreoffice-24`; the local OS is added automatically. `availableTools` optionally narrows the current agent's tool registry. Capture and extraction budgets, TTLs, outcome weights and promotion thresholds are deployment settings.
+
+Maintenance runs after recorded work and periodically for recently used scopes. `maxReassessmentsPerMaintenance` bounds retries of eligible assessment-service failures in each maintenance pass. Automatic feedback requires evidence that the recalled procedure was applied and relevant final verification; retrieval alone adds no feedback.
 
 The Harness provider stores complete experience-scope snapshots in a separate `experience` storage domain. The standalone `FileExperienceStore` uses atomic replacement and an exclusive writer lease. Each tenant should have its own runtime/store or explicit scope namespace. [Architecture and design](docs/design.md) describes the storage and consistency contracts.
 

@@ -36,9 +36,17 @@ An out-of-tree DeepSeek Harness **bundle**: ten mounted Cordis plugins provide s
 
 **Capture reads the session log; it never intercepts the loop.** The observer sees exactly what was durably recorded and cannot change what the model sees. Writes are serialized on one chain and never awaited by the log, so a failing store degrades memory instead of stalling a turn.
 
-**Model-facing changes are the expensive kind.** The three tool schemas and the memory protocol section sit in every request's prefix. Adding a field or reordering a schema invalidates provider cache reuse for every session. Recall is injected once per *turn*, appended after the claimed input — keep it that way.
+**Model-facing changes are the expensive kind.** The factual tool schemas, `experience_inspect` schema and memory protocol section sit in every request's prefix. Adding a field or reordering a schema invalidates provider cache reuse for every session. Recall is injected once per *turn*, appended after the claimed input — keep it that way.
 
-**Experience is a separate channel.** Task outcomes and agent procedures belong in the experience domain, never in the user-preference graph. A turn ending is an unknown task outcome. Active skills require evidence-backed outcomes, applicable environments and available tools; model self-judgement alone does not activate them.
+**Experience is a separate channel.** Task outcomes and agent procedures belong in the experience domain, never in the user-preference graph. A turn ending starts with an unknown outcome. An independent assessor can propose `tool-evidence` outcomes only from exact committed check/readback quotations; runtime gates enforce coverage, freshness and confidence. Active skills require supported outcomes, applicable environments and available tools. Assistant claims and model confidence alone do not activate them.
+
+**Task lineage follows the user objective.** Save planning and execution checkpoints with the original latest request, increasing revision and predecessor ID. Use the configured model to resolve continuation, corrections and increments; outcome status cannot substitute for requirement interpretation. Each new checkpoint needs fresh final verification. Preserve historical capture gaps through `priorCaptureIncomplete` when current artifact revalidation becomes possible.
+
+**Provenance expands on demand.** Ordinary recall contains complete procedures and compact source counts. `experience_inspect` exposes scoped, paginated source indexes and audited verification quotes. Keep raw trajectories and long event lists out of automatic recall.
+
+**Memory models use host configuration.** Default auxiliary calls follow the current session through `ctx.llm.stream()` without tools. Optional Harness-model or API overrides use the plugin configuration page. Store API secrets through the host credential service and persist only credential references in settings; resolve credentials for each request. Profile row overrides include the complete `config`.
+
+**Feedback needs attribution.** Automatic feedback cites actual application of the exact recalled skill version and relevant final verification from a later independent task. A retrieved skill or an overall task result alone is insufficient. Keep unresolved outcomes visible through `/experience pending`. `/experience assess` re-examines existing evidence; bounded maintenance retries address service/response failures, while substantive uncertainty retains fresh verification and explicit user confirmation.
 
 **Lifecycle operations preserve provenance.** Ordinary deduplication must not revive withdrawn, expired or quarantined skills. Supersession creates an explicit successor. Forget erases dependent revisions and feedback, invalidates in-flight capture and checks evidence again after external extraction.
 
@@ -55,9 +63,10 @@ src/memory-consolidation/   behaviour-cycle distiller + turn scheduler
 src/memory-recall/          agent/pre-step retrieval and injection
 src/tool-memory/            memory_search / memory_write / memory_forget + prompt section
 src/command-memory/         the /memory command: the surface addressed to the person
-src/experience/             portable task/skill engine, schemas, API extraction, file store
+src/experience/             task/skill engine, outcome proofs, lineage, source manifests, file store
 src/experience-store-domain/ independent experience persistence for Harness
-src/experience-harness/     capture, separate recall, /experience and lifecycle integration
+src/experience-harness/     capture, task composition, assessment, recall, inspection and model settings
+src/experience-harness/client/ bundle GUI for memory models and host credential controls
 src/evaluation/             API dataset runners, checkpoints and real OSWorld bridge
 tests/<plugin>/             suites drive the real plugin bodies on real registries
 bench/                      benchmark harness (4 datasets); dev-only, never published

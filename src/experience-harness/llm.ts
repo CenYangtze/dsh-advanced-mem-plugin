@@ -4,7 +4,8 @@ import type { Session } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-session-projection'
 import type {} from '@deepseek-ai/dsh-agent-default-model'
 import { ReasoningEffortId } from '@deepseek-ai/dsh-llm'
-import { EXPERIENCE_EXTRACTION_PROMPT, parseExperienceCandidates } from '../experience/provider.ts'
+import { EXPERIENCE_EXTRACTION_PROMPT, parseExperienceDistillation } from '../experience/provider.ts'
+import type { ExperienceJsonModel } from '../experience/provider.ts'
 import { serializeExperienceDistillation } from '../experience/payload.ts'
 import type { ExperienceDistiller } from '../experience/types.ts'
 
@@ -56,7 +57,7 @@ export function resolveExperienceModel(ctx: Context, agent?: Agent, session?: Se
 }
 
 /** One auxiliary request through the host adapter; credentials remain owned by Harness. */
-export function createHarnessExperienceDistiller(ctx: Context, route: ModelSelection, config: HarnessExtractionConfig): ExperienceDistiller {
+export function createHarnessExperienceModel(ctx: Context, route: ModelSelection, config: HarnessExtractionConfig): ExperienceJsonModel {
   for (const key of ['maxTokens', 'timeoutMs', 'maxResponseBytes', 'maxInputCharacters', 'maxCandidates'] as const) {
     if (!Number.isSafeInteger(config[key]) || config[key] <= 0) throw new Error(`${key} must be a positive integer`)
   }
@@ -64,12 +65,11 @@ export function createHarnessExperienceDistiller(ctx: Context, route: ModelSelec
   const selected = selection(route)!
   return {
     name: `harness:${selected.provider}:${selected.model}:${selected.reasoningEffort ?? 'default'}:${config.promptVersion}`,
-    async distill(input) {
-      input.signal?.throwIfAborted()
-      const text = serializeExperienceDistillation(input)
+    async complete(system, text, requestSignal) {
+      requestSignal?.throwIfAborted()
       if (text.length > config.maxInputCharacters) throw new Error('Experience extraction exceeds maxInputCharacters')
       const stop = new AbortController()
-      const signal = AbortSignal.any([stop.signal, AbortSignal.timeout(config.timeoutMs), ...(input.signal ? [input.signal] : [])])
+      const signal = AbortSignal.any([stop.signal, AbortSignal.timeout(config.timeoutMs), ...(requestSignal ? [requestSignal] : [])])
       const blocks = new Map<number, string>()
       const reasoningBytes = new Map<number, number>()
       let bytes = 0
@@ -78,7 +78,7 @@ export function createHarnessExperienceDistiller(ctx: Context, route: ModelSelec
       try {
         for await (const chunk of ctx.llm.stream({
           ...selected, temperature: config.temperature, maxTokens: config.maxTokens,
-          system: EXPERIENCE_EXTRACTION_PROMPT, messages: [{ role: 'user', content: [{ type: 'text', text }] }],
+          system, messages: [{ role: 'user', content: [{ type: 'text', text }] }],
           tools: [], signal,
         })) {
           signal.throwIfAborted()
@@ -123,8 +123,20 @@ export function createHarnessExperienceDistiller(ctx: Context, route: ModelSelec
         }
         signal.throwIfAborted()
         if (!finished) throw new Error('Harness experience extraction ended without a finish event')
-        return parseExperienceCandidates([...blocks].sort(([a], [b]) => a - b).map(([, value]) => value).join(''), config.maxCandidates)
+        return [...blocks].sort(([a], [b]) => a - b).map(([, value]) => value).join('')
       } finally { stop.abort() }
+    },
+  }
+}
+
+/** Extraction and outcome review share host authentication and stream controls. */
+export function createHarnessExperienceDistiller(ctx: Context, route: ModelSelection, config: HarnessExtractionConfig): ExperienceDistiller {
+  const model = createHarnessExperienceModel(ctx, route, config)
+  return {
+    name: model.name,
+    async distill(input) {
+      return parseExperienceDistillation(await model.complete(EXPERIENCE_EXTRACTION_PROMPT,
+        serializeExperienceDistillation(input), input.signal), input, config.maxCandidates)
     },
   }
 }

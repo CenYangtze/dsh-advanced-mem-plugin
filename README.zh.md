@@ -8,44 +8,44 @@
 flowchart LR
   L[已提交的会话日志] --> F[事实记录与语义图]
   L --> E[任务经历与结果]
-  E --> D[Harness 当前模型提炼]
+  E --> C[多轮任务要求合并]
+  C --> V[独立结果评估]
+  V --> D[经验提炼]
   D --> S[带版本的流程与失败经验]
   F --> FR[事实召回]
   S --> ER[环境与工具匹配]
   FR --> T[下一轮 Agent 任务]
   ER --> T
-  V[环境评估或用户确认] --> E
-  T --> V
+  T --> L
 ```
 
 事实通道回答“关于用户和工作区，已经知道什么”；经验通道回答“这类任务如何完成、需要哪些条件、怎样检查结果”。两个通道采用独立存储、来源规则和召回预算。
 
 ## 兼容版本与安装
 
-插件 **0.2.1** 支持 **DeepSeek Harness `dsh-v0.2.1-rc.2`**，官方提交 [`687f282e`](https://github.com/deepseek-ai/deepseek-harness/commit/687f282e8625c6b8d11ff58211a90524be2e4317)。接口变化与验证结果见[兼容性报告](docs/compatibility.zh.md)。使用该 Harness 版本要求的 Node 环境；标准 `web` profile 已提供插件所需的模型、存储与 Agent 服务。
+插件 **0.3.0** 支持 **DeepSeek Harness `dsh-v0.2.1-rc.2`**，官方提交 [`687f282e`](https://github.com/deepseek-ai/deepseek-harness/commit/687f282e8625c6b8d11ff58211a90524be2e4317)。接口变化与验证结果见[兼容性报告](docs/compatibility.zh.md)。使用该 Harness 版本要求的 Node 环境；标准 `web` profile 已提供插件所需的模型、存储与 Agent 服务。
 
 ```sh
 npm install -g @deepseek-ai/dsh@0.2.1-rc.2
-dsh plugin --profile web add github:CenYangtze/dsh-advanced-mem-plugin#master
-dsh --profile web --dump-config
+dsh plugin --profile web add ./dsh-advanced-mem-plugin-0.3.0.tgz
 dsh web
 ```
 
-`dsh web` 启动本地 GUI，并自动在浏览器打开包含认证 token 的地址。默认本地地址为 [http://127.0.0.1:3080](http://127.0.0.1:3080)，使用启动器自动打开的标签页即可。在 Harness 中配置模型服务，并在会话中选择模型，经验提炼会复用该模型及 Harness 管理的认证信息。
+`dsh web` 启动本地 GUI，并自动在浏览器打开包含认证 token 的地址。默认本地地址为 [http://127.0.0.1:3080](http://127.0.0.1:3080)，使用启动器自动打开的标签页即可。在**设置 → 模型**中配置提供商，再打开工作区会话并选择模型。任务理解、结果评估和经验提炼复用该选择及 Harness 管理的认证。完成任务并执行最终测试或产物回读后，使用 `/experience list` 查看结果；后续要求可继续在同一会话中提出。
 
-Git 安装通过 `prepare` 脚本生成 `lib/`。若 pnpm 要求允许构建，在 profile 的 `pnpm-workspace.yaml` 中加入以下配置，再次执行安装：
+也可通过 `dsh plugin --profile web add github:CenYangtze/dsh-advanced-mem-plugin#<commit>` 安装固定 Git 修订。Git 安装通过 `prepare` 脚本生成 `lib/`。若 pnpm 要求允许构建，在 profile 的 `pnpm-workspace.yaml` 中加入以下配置，再次执行安装：
 
 ```yaml
 allowBuilds:
   dsh-advanced-mem-plugin: true
 ```
 
-也可以安装本地构建的发布包：
+从源码构建发布包并安装：
 
 ```sh
 pnpm run build
 pnpm pack
-dsh plugin --profile web add ./dsh-advanced-mem-plugin-0.2.1.tgz
+dsh plugin --profile web add ./dsh-advanced-mem-plugin-0.3.0.tgz
 ```
 
 默认补丁挂载十个插件。特征哈希嵌入器作为可选入口提供；默认事实检索使用词法排序和图激活。所有 Harness 包均为 peer dependency，从宿主安装中解析。
@@ -64,17 +64,26 @@ dsh plugin --profile web add ./dsh-advanced-mem-plugin-0.2.1.tgz
 
 ## 提炼和使用经验
 
-默认的 `extractionMode: harness` 通过 Harness LLM 服务复用当前会话的**模型提供器、模型与认证配置**，无需额外设置经验提炼 API 环境变量。每次提炼都会读取模型选择，GUI 中切换模型后，后续学习随之使用新模型。会话尚未选定模型时，使用 Harness 当前的默认模型。
+默认配置 `modelSettings.mode: inherit` 配合 `extractionMode: harness`，跟随当前会话的**提供商、模型与认证**，无需额外配置经验 API。要求合并、结果评估和 Skill 提炼分别通过宿主 LLM 服务执行独立辅助请求，使用显式预算且不携带工具。模型切换应用于后续记忆请求；会话没有选定模型时使用 Harness 默认模型。
 
-默认配置在每个已采集任务结束后自动提炼。`/experience learn` 可手动触发提炼，`/experience confirm` 先记录任务结果，再触发学习。这些辅助请求具有独立的输入、输出和超时预算，不携带工具权限。
+同一任务可以跨越规划、实施、修正与新增要求。模型根据用户原始请求生成带版本的 `taskContext` 检查点，保留仍然有效的要求，并按实际作用范围解释临时指令。要求合并以原始请求为准，修正旧摘要自行附加的条件，并区分结果要求与用户明确指定的实现方法。规划轮保存任务上下文；执行工具工作后提炼可复用经验。增量任务在最终修改后使用新的独立验证接受评估。
 
-观察器采集有长度上限的可见动作和结果，覆盖 PTC 嵌套工具调用；不保存原始工具参数或隐藏推理。Harness 一轮结束时，任务结果记录为**未知**。应用评估器可通过 `experience/task-completed` 提交具有验证依据的任务；用户也可确认已采集任务的结果：
+默认策略启用 `autoConfirm`、`autoLearn` 和 `autoFeedback`。观察器从已提交事件采集可见动作与结果，覆盖 PTC 嵌套调用。独立评估逐项检查实质验收条件，引用完整测试或产物回读中的原文；运行时核对证据身份、执行顺序、要求覆盖和置信度，再接受 `tool-evidence` 结果。单纯的回合结束或助手完成声明仍保持未知结果。
+
+辅助评估通过事件 ID 与行范围选择证据，运行时还原并保存准确原文，普通召回仍保留流程与精简来源计数。
+
+已完成、工具元数据与执行时序完整的文本回读，可以按本地采集预算裁剪内容，同时保留完整执行轨迹。裁剪后的内容仅作背景；最终确认使用最后一次可能改变状态的操作之后的完整检查或回读。
+
+要求尚未确认、证据不完整或评估暂不可用的任务保留为待确认状态。通过 `/experience pending` 查看原因。对证据完整但服务调用或响应解析失败的任务，维护周期会执行有数量上限的重试；`/experience assess <episode-id>` 使用配置的模型立即重审已有证据。实质性不确定结果保持可见，不反复循环评估。用户可以继续任务并补充新验证，也可明确确认自己已经检查过的结果。宿主评估器还可通过 `experience/task-completed` 提交具有验证依据的任务。
 
 ```text
 /experience list
+/experience pending
+/experience assess <episode-id>
 /experience confirm <episode-id> success
 /experience learn
 /experience show <skill-id>
+/experience sources <skill-id>
 /experience export <skill-id>
 /experience retract <skill-id>
 /experience forget episode <episode-id>
@@ -83,45 +92,25 @@ dsh plugin --profile web add ./dsh-advanced-mem-plugin-0.2.1.tgz
 /experience maintain
 ```
 
-提炼得到结构化流程与失败经验，包含适用情境、前置条件、操作步骤、注意事项、验证方式、所需工具、环境约束和来源任务。Skill 达到配置要求的置信度与独立结果支持后进入活跃状态。仅由模型声明的成功不会直接激活 Skill。
+人工确认也接受 `failure` 和 `partial`，并将用户确认持久化为来源证据。提炼得到流程与失败经验，包含适用情境、前置条件、步骤、注意事项、验证方法、所需工具、环境约束和来源任务。Skill 达到配置要求的置信度与独立结果支持后进入活跃状态。
 
-召回选择与当前任务、环境约束、Agent 可用工具相匹配的活跃 Skill，并检查有效期。经验以独立区块每轮注入一次，用于辅助规划；操作执行继续遵循宿主的当前指令、工具权限和审批策略。导出内容是可由 Harness 读取的 `SKILL.md`，包含 YAML 名称与描述、生命周期信息和来源引用。需要将其安装为工作区 Skill 时，可保存到 `.agents/skills/<导出的名称>/SKILL.md`。
+召回选择与任务、环境和可用工具匹配且仍在有效期内的活跃 Skill，每轮注入带来源计数的精简流程区块。模型可以按需调用 `experience_inspect` 展开 Skill、按会话分组的来源索引，或指定任务的验证原文。用户可通过 `/experience sources` 查看同一来源索引。操作执行继续遵循宿主指令、权限与审批策略。
 
-### 使用独立的提炼 API
+导出生成可被 Harness 识别的 `SKILL.md`，包含 YAML 名称与描述、生命周期元数据和来源引用。需要安装为工作区 Skill 时，将其保存到 `.agents/skills/<exported-name>/SKILL.md`。
 
-需要为经验提炼单独选择模型时，在 profile 的 `cordis.patch.yml` 中设置 `extractionMode: api`，并在启动 Harness 的终端中配置地址、模型和 key。`DSH_EXPERIENCE_ENDPOINT` 应为兼容 OpenAI 的完整 **chat/completions** 地址。本地无鉴权 API 可将 key 留空。
+### 选择记忆模型
 
-profile 补丁会替换插件行的**整个 `config`**。可加入以下完整的 `experience-harness` 覆盖配置，并保留已按部署需要调整的参数：
+插件的**记忆模型**配置页提供三种方式：
 
-```yaml
-- id: experience-harness
-  config:
-    captureTurns: true
-    autoLearn: true
-    learnEveryTurns: 1
-    maxPendingJobs: 32
-    maxRecall: 3
-    maxCharacters: 5000
-    recallTimeoutMs: 250
-    viewLimit: 20
-    excludedTools: []
-    transportTools: [run_code]
-    environment: []
-    availableTools: []
-    extractionMode: api
-    endpointEnv: DSH_EXPERIENCE_ENDPOINT
-    modelEnv: DSH_EXPERIENCE_MODEL
-    apiKeyEnv: DSH_EXPERIENCE_API_KEY
-    temperature: 0
-    maxTokens: 4096
-    timeoutMs: 60000
-    maxResponseBytes: 1048576
-    maxExtractionInputChars: 64000
-    maxObservationLength: 1000
-    promptVersion: experience-v2
-```
+| 模式 | 行为 |
+|---|---|
+| `inherit` — 跟随当前会话 | 使用会话的提供商与模型；无会话可用时使用 Harness 默认模型。 |
+| `harness` — 指定其他 Harness 模型 | 为记忆处理指定已配置的提供商、模型和可选推理强度，认证继续由 Harness 管理。 |
+| `api` — 使用独立 API | 配置完整的 OpenAI 兼容 `chat/completions` 地址、模型和可选凭据引用。 |
 
-PowerShell 配置方式：
+保存后，后续记忆请求使用该选择。API 密钥输入通过宿主凭据服务保存，插件配置只保存引用；密钥输入留空时保留已有凭据。
+
+已有环境变量 API 部署继续受支持。将 [cordis.patch.yml](cordis.patch.yml) 中 `experience-harness` 行的完整配置复制到 profile 覆盖层，设置 `extractionMode: api`，并保持 `modelSettings.mode: inherit`。Profile 补丁会替换整个 `config`，因此应保留全部其他字段与已有部署参数。随后在启动 Harness 的环境中设置：
 
 ```powershell
 $env:DSH_EXPERIENCE_ENDPOINT = 'https://your-provider.example/v1/chat/completions'
@@ -130,16 +119,7 @@ $env:DSH_EXPERIENCE_API_KEY = 'your-api-key'
 dsh web
 ```
 
-Bash 或 Zsh 配置方式：
-
-```sh
-export DSH_EXPERIENCE_ENDPOINT=https://your-provider.example/v1/chat/completions
-export DSH_EXPERIENCE_MODEL=your-model
-export DSH_EXPERIENCE_API_KEY=your-api-key
-dsh web
-```
-
-`web` profile 的补丁位于 `$DSH_HOME/profiles/web/cordis.patch.yml`，`DSH_HOME` 默认为 `~/.dsh`。恢复使用会话模型时，在完整配置中将 `extractionMode` 改回 `harness`。独立 TypeScript 提炼提供器继续面向自行指定 API 连接的应用和评测程序。
+Bash、Zsh 使用 `export NAME=value` 设置同名变量。本地无鉴权 API 可将密钥留空。显式采用环境变量 API 的部署在 `inherit` 模式下保留该选择。`web` profile 补丁位于 `$DSH_HOME/profiles/web/cordis.patch.yml`，`DSH_HOME` 默认为 `~/.dsh`。恢复跟随会话时，在完整行配置中将 `extractionMode` 改回 `harness`。
 
 ## 生命周期与部署策略
 
@@ -147,7 +127,7 @@ dsh web
 |---|---|
 | 去重 | 为等价流程合并新的支持任务；重复提炼不增加独立证据票数。 |
 | 验证 | 将环境评估或用户确认保存为不可变的新经历，保留原先的结果判断。 |
-| 反馈 | 接受后续独立任务的使用反馈，更新置信度并隔离反复产生负面结果的 Skill。 |
+| 反馈 | 将后续独立任务的实际动作和最终验证归因到准确的 Skill 版本，再更新置信度并隔离反复产生负面结果的 Skill。 |
 | 替代 | 激活有证据支持的新版本，保留前序 Skill 与版本历史。 |
 | 过期 | 检索时直接过滤过期 Skill，无需等待维护任务运行。 |
 | 撤回 | 保存墓碑和审计历史。 |
@@ -155,6 +135,8 @@ dsh web
 | 容量限制 | 明确拒绝超额写入，通过导出与显式删除回收空间。 |
 
 所有策略值均在 [cordis.patch.yml](cordis.patch.yml) 中显式配置。在 profile 补丁中按 `id` 覆盖插件行时，应先复制对应的完整 `config`，再调整所需参数；这些字段不会与原配置逐项合并。可通过 `environment` 设置 `browser=chromium`、`application=libreoffice-24` 等环境项，本机操作系统自动加入。`availableTools` 可进一步限定 Agent 当前工具注册表。采集与提炼预算、有效期、结果权重和晋升阈值均由部署配置控制。
+
+维护在记录工作后执行，并周期处理近期使用的作用域。`maxReassessmentsPerMaintenance` 限制每轮维护中符合条件的评估服务异常重试数量。自动反馈要求实际使用该流程的动作证据和相关最终验证；仅被检索到不会产生反馈。
 
 Harness 存储提供器将每个经验作用域的完整快照写入独立的 `experience` 存储域。独立 API 的 `FileExperienceStore` 使用原子替换和独占写入租约。多租户部署应分配独立 runtime/store 或明确的作用域命名空间。存储和一致性约定见[架构与设计](docs/design.zh.md)。
 

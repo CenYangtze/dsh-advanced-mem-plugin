@@ -1,6 +1,6 @@
 /** Portable, JSON-serializable contracts for task experience memory. */
 export type ExperienceOutcomeStatus = 'success' | 'failure' | 'partial' | 'unknown'
-export type ExperienceOutcomeSource = 'verified' | 'user' | 'model' | 'unknown'
+export type ExperienceOutcomeSource = 'verified' | 'tool-evidence' | 'user' | 'model' | 'unknown'
 export type ExperienceSkillStatus = 'candidate' | 'active' | 'quarantined' | 'deprecated' | 'expired' | 'retracted'
 
 export interface ExperienceOutcome {
@@ -9,6 +9,40 @@ export interface ExperienceOutcome {
   readonly source: ExperienceOutcomeSource
   readonly reason: string
   readonly evidence: readonly string[]
+  readonly assessment?: ExperienceOutcomeAssessment | undefined
+}
+
+export interface ExperienceEvidenceQuote {
+  readonly eventId: string
+  readonly quote: string
+}
+
+export interface ExperienceOutcomeCriterion {
+  readonly requirement: string
+  readonly status: 'passed' | 'failed' | 'unknown'
+  readonly evidence: readonly ExperienceEvidenceQuote[]
+}
+
+/** Auditable external assessment; observedAt is the actual tool event time. */
+export interface ExperienceOutcomeAssessment {
+  readonly id: string
+  readonly assessor: string
+  readonly confidence: number
+  readonly observedAt: number
+  readonly requirementsComplete: boolean
+  readonly criteria: readonly ExperienceOutcomeCriterion[]
+}
+
+/** Host-owned projection of a committed execution, never model-generated metadata. */
+export interface ExperienceStepEvidence {
+  readonly id: string
+  readonly seq: number
+  readonly at: number
+  readonly callId: string
+  readonly role: 'action' | 'check' | 'readback' | 'unknown'
+  readonly execution: 'completed' | 'failed' | 'incomplete'
+  readonly complete: boolean
+  readonly target?: string | undefined
 }
 
 /** Observable actions and their results; hidden reasoning and raw tool arguments are excluded. */
@@ -16,10 +50,24 @@ export interface ExperienceStep {
   readonly action: string
   readonly observation: string
   readonly tool?: string | undefined
+  readonly evidence?: ExperienceStepEvidence | undefined
 }
 
 /** Exact environment constraints. Missing query values never satisfy a constraint. */
 export type ExperienceEnvironment = Readonly<Record<string, string>>
+
+/** One immutable checkpoint in a session's evolving task; confirmations keep its revision. */
+export interface ExperienceTaskContext {
+  readonly id: string
+  readonly revision: number
+  readonly previousEpisodeId?: string | undefined
+  readonly kind: 'initial' | 'continuation' | 'increment'
+  readonly latestRequest: string
+  /** Earlier execution detail was incomplete; fresh artifact checks do not prove past conduct. */
+  readonly priorCaptureIncomplete?: boolean | undefined
+  /** Host-owned session sequence where this checkpoint's current turn begins. */
+  readonly currentEvidenceStartSeq?: number | undefined
+}
 
 export interface ExperienceEpisodeInput {
   /** Stable caller-provided identity makes retries idempotent within the scope. */
@@ -37,6 +85,9 @@ export interface ExperienceEpisodeInput {
   readonly sessionId?: string | undefined
   /** Immutable outcome confirmation; retained as a provenance edge. */
   readonly derivedFrom?: string | undefined
+  readonly capture?: { readonly complete: boolean; readonly end: 'completed' | 'incomplete' } | undefined
+  readonly recalledSkills?: readonly { readonly id: string; readonly version: number }[] | undefined
+  readonly taskContext?: ExperienceTaskContext | undefined
 }
 
 export interface ExperienceEpisode extends ExperienceEpisodeInput {
@@ -100,6 +151,12 @@ export interface ExperienceFeedbackInput {
   readonly episodeId: string
   readonly verdict: 'helpful' | 'harmful' | 'irrelevant'
   readonly reason: string
+  readonly attribution?: {
+    readonly skillVersion: number
+    readonly assessmentId: string
+    readonly actionEvidence: readonly ExperienceEvidenceQuote[]
+    readonly verificationEvidence: readonly ExperienceEvidenceQuote[]
+  } | undefined
 }
 
 export interface ExperienceFeedback extends ExperienceFeedbackInput {
@@ -143,9 +200,40 @@ export interface ExperiencePolicy {
   readonly feedbackPrior: number
   readonly harmfulFeedbackThreshold: number
   readonly verifiedOutcomeWeight: number
+  readonly toolEvidenceOutcomeWeight: number
+  readonly minOutcomeConfidence: number
   readonly userOutcomeWeight: number
   readonly modelOutcomeWeight: number
   readonly unknownOutcomeWeight: number
+}
+
+export interface ExperienceOutcomePolicy {
+  readonly minOutcomeConfidence: number
+  readonly maxTextLength: number
+  readonly maxItemsPerField: number
+}
+
+/** Suggested feedback still requires a later independent task in ExperienceMemory.feedback. */
+export interface ExperienceOutcomeFeedback {
+  readonly skillId: string
+  readonly version: number
+  readonly verdict: 'helpful' | 'harmful'
+  readonly reason: string
+  readonly actionEvidence: readonly ExperienceEvidenceQuote[]
+  readonly verificationEvidence: readonly ExperienceEvidenceQuote[]
+}
+
+export interface ExperienceOutcomeResult {
+  readonly outcome: ExperienceOutcome
+  readonly feedback: readonly ExperienceOutcomeFeedback[]
+}
+
+export interface ExperienceConfirmationOptions {
+  /** Atomic compare-and-set: a stale background assessment cannot replace a correction. */
+  readonly expectedLatestEpisodeId?: string | undefined
+  /** Reject a background judgement if a newer task checkpoint appeared meanwhile. */
+  readonly expectedTaskRevision?: number | undefined
+  readonly signal?: AbortSignal | undefined
 }
 
 export interface ExperienceDistillInput {
@@ -175,6 +263,33 @@ export interface ExperienceRecallHit {
   readonly skill: ExperienceSkill
   readonly score: number
   readonly evidence: readonly string[]
+}
+
+export interface ExperienceSourceManifest {
+  readonly skillId: string
+  readonly skillVersion: number
+  readonly scope: string
+  readonly evidenceCount: number
+  readonly sessions: readonly {
+    readonly sessionId: string | null
+    readonly evidenceCount: number
+    readonly episodes: readonly {
+      readonly id: string
+      readonly revision: number | null
+      readonly kind: ExperienceTaskContext['kind'] | null
+      readonly previousEpisodeId: string | null
+      readonly derivedFrom: string | null
+      readonly priorCaptureIncomplete: boolean
+      readonly currentEvidenceStartSeq: number | null
+      readonly outcome: ExperienceOutcomeStatus
+      readonly source: ExperienceOutcomeSource
+      readonly completedAt: number
+      readonly validatedAt: number | null
+      readonly evidenceCount: number
+      readonly supportsSkill: boolean
+      readonly providesFeedback: boolean
+    }[]
+  }[]
 }
 
 export interface ExperienceLearnResult {

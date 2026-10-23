@@ -131,6 +131,7 @@
       config:
         minTrustedEpisodes: 1
         minConfidence: 0.6
+        minOutcomeConfidence: 0.9
         duplicateSimilarity: 0.85
         skillTtlMs: 7776000000
         candidateTtlMs: 2592000000
@@ -147,6 +148,7 @@
         feedbackPrior: 2
         harmfulFeedbackThreshold: 2
         verifiedOutcomeWeight: 1
+        toolEvidenceOutcomeWeight: 0.85
         userOutcomeWeight: 0.9
         modelOutcomeWeight: 0.35
         unknownOutcomeWeight: 0
@@ -159,27 +161,40 @@
       config:
         captureTurns: true
         autoLearn: true
+        autoConfirm: true
+        autoFeedback: true
+        maintenanceIntervalMs: 3600000
+        maxMaintenanceScopes: 128
+        maxReassessmentsPerMaintenance: 2
+        maxExtractionsPerMaintenance: 2
+        maxTaskContextTurns: 12
+        inspectPageSize: 6
+        maxInspectCharacters: 12000
         learnEveryTurns: 1
         maxPendingJobs: 32
         maxRecall: 3
         maxCharacters: 5000
         recallTimeoutMs: 250
         viewLimit: 20
-        excludedTools: []
+        excludedTools: [memory_search, memory_write, memory_forget, experience_inspect]
         transportTools: [run_code]
         environment: []
         # Empty means use the agent's current tool registry without an extra allowlist.
         availableTools: []
         # Reuse the current Harness model and its registered provider authentication.
         extractionMode: harness
+        modelSettings:
+          mode: inherit
         # Used only when extractionMode is explicitly set to api.
         endpointEnv: DSH_EXPERIENCE_ENDPOINT
         modelEnv: DSH_EXPERIENCE_MODEL
         apiKeyEnv: DSH_EXPERIENCE_API_KEY
         temperature: 0
-        maxTokens: 4096
-        timeoutMs: 60000
+        maxTokens: 32768
+        timeoutMs: 180000
         maxResponseBytes: 1048576
         maxExtractionInputChars: 64000
-        maxObservationLength: 1000
-        promptVersion: experience-v2
+        maxObservationLength: 4000
+        promptVersion: experience-v3
+        outcomePromptVersion: outcome-v3
+        contextPromptVersion: task-context-v1

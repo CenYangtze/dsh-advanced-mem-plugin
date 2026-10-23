@@ -7,6 +7,8 @@ export * from './types.ts'
 export { ExperienceMemory, ExperienceError, renderSkillMarkdown } from './core.ts'
 export * from './provider.ts'
 export * from './schema.ts'
+export * from './outcome.ts'
+export * from './trajectory.ts'
 export { FileExperienceStore } from './store.ts'
 
 declare module '@deepseek-ai/cordis' {
@@ -38,6 +40,8 @@ export class ExperienceRuntime extends Service {
     feedbackPrior: z.number().required(),
     harmfulFeedbackThreshold: z.number().required(),
     verifiedOutcomeWeight: z.number().required(),
+    toolEvidenceOutcomeWeight: z.number().required(),
+    minOutcomeConfidence: z.number().required(),
     userOutcomeWeight: z.number().required(),
     modelOutcomeWeight: z.number().required(),
     unknownOutcomeWeight: z.number().required(),

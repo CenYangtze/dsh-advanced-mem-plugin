@@ -14,6 +14,8 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
+import { runInNewContext } from 'node:vm'
+import { createRequire } from 'node:module'
 
 const manifest = JSON.parse(readFileSync('package.json', 'utf8'))
 const errors = []
@@ -63,6 +65,17 @@ for (const subpath of entryPoints) {
   }
   let mod
   try {
+    if (subpath === './client') {
+      let registration
+      runInNewContext(readFileSync(target, 'utf8'), { window: { __ModuleLoader__: { load: value => { registration = value } } } }, { timeout: 1000 })
+      if (registration?.id !== manifest.name || typeof registration.factory !== 'function') throw new Error('Invalid Harness client registration')
+      const require = createRequire(import.meta.url)
+      // Dependencies are resolved by the host browser registry in production.
+      mod = registration.factory(id => id === 'react' ? { createElement() {}, useState() {}, useEffect() {}, useMemo() {}, useRef() {} } : require(id))
+      if (typeof mod.apply !== 'function' || !Array.isArray(mod.inject)) throw new Error('Invalid Harness client plugin shape')
+      console.log(`  ok  ${subpath.padEnd(18)} browser companion`)
+      continue
+    }
     mod = await import(pathToFileURL(resolve(target)).href)
   } catch (error) {
     errors.push(`exports["${subpath}"] -> ${target} failed to import: ${error.message}`)
