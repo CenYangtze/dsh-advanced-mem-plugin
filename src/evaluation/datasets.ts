@@ -61,14 +61,31 @@ export async function loadLongMemEval(path: string, options: DatasetOptions): Pr
   const cases = array(raw, 'LongMemEval').map((value, index): EvaluationCase => {
     const row = object(value, `LongMemEval[${index}]`)
     const id = string(row.question_id, 'question_id')
-    const sessionIds = strings(row.haystack_session_ids, `${id}.haystack_session_ids`)
+    const sourceSessionIds = strings(row.haystack_session_ids, `${id}.haystack_session_ids`)
     const dates = array(row.haystack_dates, `${id}.haystack_dates`)
     const sessions = array(row.haystack_sessions, `${id}.haystack_sessions`)
-    if (new Set(sessionIds).size !== sessionIds.length || sessionIds.length !== dates.length || dates.length !== sessions.length) throw new Error(`${id}: misaligned or duplicated history sessions`)
+    if (sourceSessionIds.length !== dates.length || dates.length !== sessions.length) throw new Error(`${id}: misaligned history sessions`)
+    // Official haystacks can repeat a source session. Retain every physical occurrence,
+    // reserving all source IDs before generating suffixes so a real ID cannot collide.
+    const reservedIds = new Set(sourceSessionIds)
+    const occurrences = new Map<string, string[]>()
+    const sessionIds = sourceSessionIds.map(sourceId => {
+      const previous = occurrences.get(sourceId) ?? []
+      let internalId = sourceId
+      if (previous.length) {
+        let suffix = previous.length + 1
+        do { internalId = `${sourceId}#occurrence:${suffix++}` } while (reservedIds.has(internalId))
+        reservedIds.add(internalId)
+      }
+      previous.push(internalId)
+      occurrences.set(sourceId, previous)
+      return internalId
+    })
     const history: HistoryMessage[] = []
     const evidence: string[] = []
-    const evidenceSessions = strings(row.answer_session_ids, `${id}.answer_session_ids`)
-    for (const evidenceId of evidenceSessions) if (!sessionIds.includes(evidenceId)) throw new Error(`${id}: unknown evidence session ${evidenceId}`)
+    const evidenceSourceIds = strings(row.answer_session_ids, `${id}.answer_session_ids`)
+    for (const evidenceId of evidenceSourceIds) if (!occurrences.has(evidenceId)) throw new Error(`${id}: unknown evidence session ${evidenceId}`)
+    const evidenceSessions = [...new Set(evidenceSourceIds.flatMap(sourceId => occurrences.get(sourceId)!))]
     sessions.forEach((session, si) => {
       const sessionId = sessionIds[si]!
       const at = parseLongMemEvalDate(dates[si])

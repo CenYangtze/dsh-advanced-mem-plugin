@@ -12,6 +12,8 @@ The `dsh-advanced-mem-plugin/evaluation` entry point evaluates the production me
 
 Pin dataset and Harness revisions in each run. LongMemEval publishes its cleaned data on [Hugging Face](https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned). The loaders preserve supplied history timestamps, including the source dataset's non-monotonic question/session times. Dates without a timezone are interpreted as UTC.
 
+When a LongMemEval haystack repeats a source session ID, the loader retains each occurrence with a deterministic, collision-free internal ID and maps its evidence annotations to those occurrences. Source IDs that occur once remain unchanged. Misaligned history arrays and references to absent sessions are rejected.
+
 ## Run conversational evaluation
 
 Use Node.js 24 or a TypeScript application importing the built package. The following application runs inside a Harness workspace with its storage packages available. `memory-policy.json` contains the complete memory service configuration from the deployment profile; no evaluation-specific memory policy is substituted.

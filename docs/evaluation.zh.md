@@ -12,6 +12,8 @@
 
 每次运行记录数据集与 Harness 的固定版本。LongMemEval 的清理版数据发布在 [Hugging Face](https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned)。加载器保留数据源中的全部历史及时间戳，包括源数据中问题时间与会话时间不单调的情况；无时区日期统一按 UTC 解释。
 
+当 LongMemEval 历史中重复出现同一来源会话 ID 时，加载器保留每次出现，为其分配稳定且不冲突的内部 ID，并将证据标注映射到对应的会话实例。只出现一次的来源 ID 保持不变；历史数组长度错位和指向不存在会话的引用会被拒绝。
+
 ## 运行会话记忆评测
 
 使用 Node.js 24，或在 TypeScript 应用中导入构建后的包。下列应用在具有官方存储包的 Harness 工作区内运行。`memory-policy.json` 使用部署配置中的完整记忆服务参数。
