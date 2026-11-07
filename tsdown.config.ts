@@ -27,6 +27,7 @@ export default defineConfig({
     'src/experience-store-domain/index.ts',
     'src/experience-harness/index.ts',
     'src/evaluation/index.ts',
+    'src/kylin-memory-ui/index.ts',
   ],
   outDir: 'lib',
   format: 'esm',

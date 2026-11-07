@@ -65,6 +65,12 @@
     - id: memory-store
       name: dsh-advanced-mem-plugin/store-domain
 
+    - id: kylin-memory-ui
+      name: dsh-advanced-mem-plugin/kylin-memory-ui
+      config:
+        defaultLimit: 20
+        maxLimit: 50
+
     # No embedding row. `embedding-hash` is FNV-1a feature hashing — a random
     # projection of token hashes with no semantics in it — so its cosine
     # similarity is a lossier restatement of the term overlap BM25 already has.

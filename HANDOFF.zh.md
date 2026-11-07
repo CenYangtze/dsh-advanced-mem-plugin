@@ -6,6 +6,8 @@
 / 410 项测试、build 与 bundle 验证（10 个 patch row、16 个 entry point）。尚未部署
 生产。** 交付分支为 `fix/memory-quality-sdk-20261106`；提交与远端状态以 Git 记录为准。本页不是发布批准。
 
+**后续 UI 工作有独立证据。** 工作区新增了智忆麒麟品牌、只读记忆浮层和基于持久化 `memory-recall` 消息的对话卡片。真实浏览器已通过合成记忆列表/搜索/详情、卡片展开/全文、暗色与 390px 布局检查，无页面脚本错误或插件激活警告。工作区完整检查通过 494 项测试，但包含原有 experience 改动。这不证明记忆质量提升，也不代表已部署生产。见 [UI 验收记录](docs/ui-verification-20261107/README.zh.md)与[接口限制](docs/kylin-memory-ui.zh.md)。
+
 **不在本次范围：** 原有的 `baseline33` 用户/experience 工作不属于本改动集。维护者
 会从原始备份隔离，不把它混入本次记忆审查，也不拿它当本次证据。
 

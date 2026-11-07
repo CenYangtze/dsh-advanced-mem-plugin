@@ -24,17 +24,7 @@ import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { ContentBlock, UserMessage } from '@deepseek-ai/dsh-llm'
 import { sessionScope } from '../memory/index.ts'
 import type { MemoryCue, MemoryProfile, MemoryScope } from '../memory/index.ts'
-
-declare module '@deepseek-ai/dsh-llm' {
-  interface MessageSourceMap {
-    /** A once-per-turn memory snapshot, excluded from user-authored capture. */
-    'memory-recall': {
-      kind: 'memory-recall'
-      form: 'snapshot'
-      sections: { name: string; text: string }[]
-    }
-  }
-}
+import type {} from './source.ts'
 
 /** Cordis plugin name used by loader diagnostics; also the injected message's source plugin. */
 export const name = 'memory-recall'

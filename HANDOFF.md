@@ -8,6 +8,8 @@ English | [中文](HANDOFF.zh.md) | [Update 2026-11-06](UPDATE-20261106.md)
 `fix/memory-quality-sdk-20261106`; Git records determine commit and remote status.
 Do not treat this page as a release approval.
 
+**Subsequent UI work has separate evidence.** The working tree adds 智忆麒麟 branding, a read-only memory overlay and a durable `memory-recall` conversation card. Real-browser acceptance passed for synthetic memory listing/search/details, card expansion/full text, dark appearance and 390px layout, with no page errors or activation warnings. The working-tree check passed 494 tests but includes pre-existing experience changes. This does not establish improved memory quality or production deployment. See the [UI verification record](docs/ui-verification-20261107/README.md) and [API limitations](docs/kylin-memory-ui.md).
+
 **Out of scope:** the pre-existing `baseline33` user/experience work is not part
 of this change set. The maintainer isolates it from the original backup. Do not
 mix it into this memory review or use it as evidence for the changes below.

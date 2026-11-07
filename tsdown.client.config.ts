@@ -2,7 +2,7 @@ import { defineConfig } from 'tsdown'
 
 /** Harness loads web companions through its shared browser module registry. */
 export default defineConfig({
-  entry: { client: 'src/experience-harness/client/index.ts' },
+  entry: { client: 'src/client.ts' },
   outDir: 'lib/experience-harness',
   format: 'cjs', platform: 'browser', target: 'es2022',
   clean: false, dts: false, sourcemap: false,

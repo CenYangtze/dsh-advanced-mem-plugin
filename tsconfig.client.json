@@ -1,0 +1,11 @@
+{
+  "extends": "./tsconfig.json",
+  "include": [
+    "src/client.ts",
+    "src/**/client/**/*.ts",
+    "src/kylin-memory-ui/client-contract.ts",
+    "src/memory-recall/source.ts",
+    "tests/**/client/**/*.ts"
+  ],
+  "exclude": []
+}

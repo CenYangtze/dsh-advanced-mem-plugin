@@ -18,5 +18,11 @@
     "noEmit": true,
     "types": ["node"]
   },
-  "include": ["src/**/*.ts", "tests/**/*.ts", "bench/**/*.ts", "tsdown*.config.ts", "vitest.config.ts"]
+  "include": ["src/**/*.ts", "tests/**/*.ts", "bench/**/*.ts", "tsdown*.config.ts", "vitest.config.ts"],
+  "exclude": [
+    "src/client.ts",
+    "src/**/client/**/*.ts",
+    "src/kylin-memory-ui/client-contract.ts",
+    "tests/**/client/**/*.ts"
+  ]
 }
