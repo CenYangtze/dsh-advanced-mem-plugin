@@ -31,6 +31,14 @@ const base = {
   duplicateThreshold: 0.8,
   diversityThreshold: 0.7,
   vectorWeight: 1,
+  safety: {
+    redactPrivateKeys: true,
+    redactProviderTokens: true,
+    redactBearerTokens: true,
+    redactSecretAssignments: true,
+    rejectSensitivePatterns: false,
+    blockedLiterals: [],
+  },
 } satisfies MemoryConfig
 
 /** Mount the hub over an in-memory store with the given overrides. */

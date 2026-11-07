@@ -1,0 +1,176 @@
+
+> dsh-advanced-mem-plugin@0.3.0 check <clean-candidate>
+> pnpm run typecheck && pnpm run test && pnpm run build && pnpm run verify
+
+
+> dsh-advanced-mem-plugin@0.3.0 typecheck <clean-candidate>
+> tsc --noEmit
+
+
+> dsh-advanced-mem-plugin@0.3.0 test <clean-candidate>
+> vitest run
+
+
+ RUN  v4.1.11 <clean-candidate>
+
+--suite must be one of longmemeval, locomo, perltqa, kylinoffice-declared, kylinoffice-grounded
+
+Usage: node --experimental-transform-types bench/retrieval.ts [options]
+
+  --suite <name>       longmemeval | locomo | perltqa | kylinoffice-declared | kylinoffice-grounded   (required)
+  --dataset <path>     dataset file for that suite          (required)
+  --out <dir>          output directory                     (default: bench/out)
+  --baseline <b>       memory | none | random | recent | bm25 | dense | rrf
+                       (default: memory). dense and rrf need --embed-model.
+  --limit <n>          corpora to run, 0 for all            (default: 0)
+  --recall-limit <n>   cues per query                       (default: 10)
+  --dimensions <n>     embedding width, 0 for lexical only  (default: 0)
+  --vector-weight <w>  weight of the vector ranking in fusion  (default: 1)
+  --include-evidence   quote evidence-use records too       (default: off)
+  --consolidate        run the distiller so layer 1 joins    (default: off)
+  --embed-model <id>   mount a real encoder from an OpenAI-compatible /embeddings
+                       endpoint instead of the feature-hash one. Needs
+                       OPENAI_BASE_URL and OPENAI_API_KEY in the environment.
+  --embed-dims <n>     vector width that endpoint returns    (default: 1024)
+  --embed-cache <path> JSONL vector cache        (default: bench/out/emb-<model>.jsonl)
+  --dump-retrieved <p> write per-question retrieved text as JSONL, for a reader
+                       to answer from. Retrieval alone needs no text; an
+                       end-to-end QA run does.
+
+ Test Files  22 passed (22)
+      Tests  410 passed (410)
+   Start at  02:06:34
+   Duration  2.07s (transform 6.54s, setup 0ms, import 14.21s, tests 2.64s, environment 6ms)
+
+
+> dsh-advanced-mem-plugin@0.3.0 build <clean-candidate>
+> tsdown && tsdown --config tsdown.client.config.ts
+
+鈩?tsdown v0.22.14 powered by rolldown v1.2.5
+鈩?config file: <clean-candidate>\tsdown.config.ts 
+鈩?entry: src/memory/index.ts, src/memory/invariant.ts, src/memory-store-domain/index.ts, src/memory-embedding-hash/index.ts, src/memory-embedding-kylin/index.ts, src/memory-observer/index.ts, src/memory-consolidation/index.ts, src/memory-recall/index.ts, src/tool-memory/index.ts, src/command-memory/index.ts, src/experience/index.ts, src/experience/api.ts, src/experience-store-domain/index.ts, src/experience-harness/index.ts, src/evaluation/index.ts
+鈩?target: node22
+鈩?tsconfig: tsconfig.json
+鈩?Build start
+鈩?lib\memory\index.js                         98.91 kB 鈹?gzip: 25.26 kB
+鈩?lib\experience-harness\index.js             31.03 kB 鈹?gzip:  8.43 kB
+鈩?lib\tool-memory\index.js                    17.83 kB 鈹?gzip:  5.35 kB
+鈩?lib\memory-embedding-kylin\index.js         14.46 kB 鈹?gzip:  4.82 kB
+鈩?lib\memory-observer\index.js                 9.65 kB 鈹?gzip:  3.50 kB
+鈩?lib\memory-consolidation\index.js            8.81 kB 鈹?gzip:  2.58 kB
+鈩?lib\command-memory\index.js                  8.69 kB 鈹?gzip:  3.18 kB
+鈩?lib\memory-store-domain\index.js             8.02 kB 鈹?gzip:  2.35 kB
+鈩?lib\memory-recall\index.js                   6.60 kB 鈹?gzip:  2.73 kB
+鈩?lib\memory\invariant.js                      4.51 kB 鈹?gzip:  1.77 kB
+鈩?lib\experience\index.js                      4.37 kB 鈹?gzip:  1.23 kB
+鈩?lib\memory-embedding-hash\index.js           3.45 kB 鈹?gzip:  1.63 kB
+鈩?lib\experience\api.js                        2.06 kB 鈹?gzip:  0.48 kB
+鈩?lib\experience-store-domain\index.js         1.33 kB 鈹?gzip:  0.59 kB
+鈩?lib\evaluation\index.js                      1.23 kB 鈹?gzip:  0.41 kB
+鈩?lib\experience\core.js                      41.53 kB 鈹?gzip:  9.93 kB
+鈩?lib\memory-consolidation\semantic.js        21.13 kB 鈹?gzip:  5.95 kB
+鈩?lib\experience\outcome.js                   18.52 kB 鈹?gzip:  5.78 kB
+鈩?lib\experience\schema.js                    16.62 kB 鈹?gzip:  4.14 kB
+鈩?lib\memory\scoring.js                       15.24 kB 鈹?gzip:  5.94 kB
+鈩?lib\experience-harness\task-context.js      10.58 kB 鈹?gzip:  3.52 kB
+鈩?lib\evaluation\osworld.js                    9.91 kB 鈹?gzip:  3.30 kB
+鈩?lib\experience-harness\capture-evidence.js   9.70 kB 鈹?gzip:  3.67 kB
+鈩?lib\experience-harness\capture.js            9.41 kB 鈹?gzip:  2.83 kB
+鈩?lib\memory-consolidation\distiller.js        8.27 kB 鈹?gzip:  3.03 kB
+鈩?lib\memory-consolidation\model.js            8.21 kB 鈹?gzip:  2.60 kB
+鈩?lib\experience\provider.js                   8.14 kB 鈹?gzip:  3.20 kB
+鈩?lib\evaluation\datasets.js                   7.89 kB 鈹?gzip:  2.71 kB
+鈩?lib\evaluation\experience.js                 7.79 kB 鈹?gzip:  2.56 kB
+鈩?lib\memory-store-domain\spec.js              6.92 kB 鈹?gzip:  2.09 kB
+鈩?lib\evaluation\runner.js                     6.82 kB 鈹?gzip:  2.31 kB
+鈩?lib\experience-harness\llm.js                6.61 kB 鈹?gzip:  2.11 kB
+鈩?lib\memory-consolidation\stated.js           5.97 kB 鈹?gzip:  2.61 kB
+鈩?lib\experience\trajectory.js                 5.25 kB 鈹?gzip:  1.82 kB
+鈩?lib\experience-harness\settings.js           4.66 kB 鈹?gzip:  1.79 kB
+鈩?lib\evaluation\agents.js                     3.86 kB 鈹?gzip:  1.62 kB
+鈩?lib\experience\store.js                      3.85 kB 鈹?gzip:  1.43 kB
+鈩?lib\experience-harness\reassessment.js       3.74 kB 鈹?gzip:  1.39 kB
+鈩?lib\evaluation\http.js                       3.30 kB 鈹?gzip:  1.38 kB
+鈩?lib\evaluation\memory.js                     3.10 kB 鈹?gzip:  1.17 kB
+鈩?lib\tool-memory\prompt.js                    2.93 kB 鈹?gzip:  1.42 kB
+鈩?lib\memory\types.js                          2.64 kB 鈹?gzip:  1.01 kB
+鈩?lib\evaluation\checkpoint.js                 2.58 kB 鈹?gzip:  1.08 kB
+鈩?lib\experience\payload.js                    2.28 kB 鈹?gzip:  0.80 kB
+鈩?lib\memory\providers.js                      1.76 kB 鈹?gzip:  0.78 kB
+鈩?lib\memory\errors.js                         0.53 kB 鈹?gzip:  0.31 kB
+鈩?lib\memory\index.d.ts                       31.36 kB 鈹?gzip: 10.19 kB
+鈩?lib\memory-embedding-kylin\index.d.ts        8.71 kB 鈹?gzip:  3.08 kB
+鈩?lib\memory-store-domain\index.d.ts           5.21 kB 鈹?gzip:  1.41 kB
+鈩?lib\experience\index.d.ts                    4.65 kB 鈹?gzip:  1.08 kB
+鈩?lib\memory-observer\index.d.ts               3.91 kB 鈹?gzip:  1.77 kB
+鈩?lib\experience\api.d.ts                      3.82 kB 鈹?gzip:  0.71 kB
+鈩?lib\evaluation\index.d.ts                    2.56 kB 鈹?gzip:  0.62 kB
+鈩?lib\memory-embedding-hash\index.d.ts         2.56 kB 鈹?gzip:  1.18 kB
+鈩?lib\memory-recall\index.d.ts                 2.47 kB 鈹?gzip:  1.18 kB
+鈩?lib\memory-consolidation\index.d.ts          2.04 kB 鈹?gzip:  0.85 kB
+鈩?lib\experience-harness\index.d.ts            2.02 kB 鈹?gzip:  0.81 kB
+鈩?lib\command-memory\index.d.ts                1.77 kB 鈹?gzip:  0.81 kB
+鈩?lib\tool-memory\index.d.ts                   1.37 kB 鈹?gzip:  0.69 kB
+鈩?lib\experience-store-domain\index.d.ts       1.05 kB 鈹?gzip:  0.47 kB
+鈩?lib\memory\invariant.d.ts                    0.56 kB 鈹?gzip:  0.35 kB
+鈩?lib\memory\types.d.ts                       19.85 kB 鈹?gzip:  6.22 kB
+鈩?lib\experience\schema.d.ts                  18.37 kB 鈹?gzip:  2.29 kB
+鈩?lib\memory\providers.d.ts                   16.79 kB 鈹?gzip:  4.98 kB
+鈩?lib\memory\query.d.ts                       14.37 kB 鈹?gzip:  4.32 kB
+鈩?lib\experience\types.d.ts                   12.24 kB 鈹?gzip:  3.00 kB
+鈩?lib\experience\outcome.d.ts                  7.28 kB 鈹?gzip:  2.71 kB
+鈩?lib\memory\scoring.d.ts                      7.09 kB 鈹?gzip:  2.75 kB
+鈩?lib\evaluation\types.d.ts                    5.16 kB 鈹?gzip:  1.40 kB
+鈩?lib\experience\provider.d.ts                 5.03 kB 鈹?gzip:  2.04 kB
+鈩?lib\memory-consolidation\distiller.d.ts      4.56 kB 鈹?gzip:  1.85 kB
+鈩?lib\memory-consolidation\semantic.d.ts       4.46 kB 鈹?gzip:  1.63 kB
+鈩?lib\memory-consolidation\stated.d.ts         3.56 kB 鈹?gzip:  1.51 kB
+鈩?lib\experience\core.d.ts                     3.33 kB 鈹?gzip:  1.20 kB
+鈩?lib\evaluation\osworld.d.ts                  3.14 kB 鈹?gzip:  0.96 kB
+鈩?lib\tool-memory\prompt.d.ts                  2.96 kB 鈹?gzip:  1.42 kB
+鈩?lib\evaluation\experience.d.ts               2.90 kB 鈹?gzip:  0.89 kB
+鈩?lib\memory-consolidation\model.d.ts          2.83 kB 鈹?gzip:  1.09 kB
+鈩?lib\memory-store-domain\spec.d.ts            1.76 kB 鈹?gzip:  0.64 kB
+鈩?lib\memory\errors.d.ts                       1.60 kB 鈹?gzip:  0.79 kB
+鈩?lib\evaluation\http.d.ts                     1.54 kB 鈹?gzip:  0.65 kB
+鈩?lib\evaluation\agents.d.ts                   1.02 kB 鈹?gzip:  0.45 kB
+鈩?lib\experience\store.d.ts                    0.91 kB 鈹?gzip:  0.45 kB
+鈩?lib\experience\trajectory.d.ts               0.91 kB 鈹?gzip:  0.41 kB
+鈩?lib\evaluation\runner.d.ts                   0.86 kB 鈹?gzip:  0.38 kB
+鈩?lib\evaluation\datasets.d.ts                 0.83 kB 鈹?gzip:  0.40 kB
+鈩?lib\evaluation\memory.d.ts                   0.83 kB 鈹?gzip:  0.43 kB
+鈩?lib\experience-harness\settings.d.ts         0.67 kB 鈹?gzip:  0.35 kB
+鈩?lib\evaluation\checkpoint.d.ts               0.60 kB 鈹?gzip:  0.32 kB
+鈩?89 files, total: 700.18 kB
+鉁?Build complete in 4774ms
+鈩?tsdown v0.22.14 powered by rolldown v1.2.5
+鈩?config file: <clean-candidate>\tsdown.client.config.ts 
+鈩?entry: src/experience-harness/client/index.ts
+鈩?target: es2022
+鈩?tsconfig: tsconfig.json
+鈩?Build start
+鈩?lib\experience-harness\client.js  15.69 kB 鈹?gzip: 5.45 kB
+鈩?1 files, total: 15.69 kB
+鉁?Build complete in 24ms
+
+> dsh-advanced-mem-plugin@0.3.0 verify <clean-candidate>
+> node scripts/verify-bundle.mjs
+
+  ok  .                  service (default export)
+  ok  ./invariant        function plugin (name=memory-invariant)
+  ok  ./store-domain     function plugin (name=memory-store-domain)
+  ok  ./embedding-hash   function plugin (name=memory-embedding-hash)
+  ok  ./embedding-kylin  function plugin (name=memory-embedding-kylin)
+  ok  ./observer         function plugin (name=memory-observer)
+  ok  ./consolidation    function plugin (name=memory-consolidation)
+  ok  ./recall           function plugin (name=memory-recall)
+  ok  ./tool             function plugin (name=tool-memory)
+  ok  ./command          function plugin (name=command-memory)
+  ok  ./experience       service (default export)
+  ok  ./experience/api   API library
+  ok  ./experience-store-domain function plugin (name=experience-store-domain)
+  ok  ./experience-harness function plugin (name=experience-harness)
+  ok  ./evaluation       API library
+  ok  ./client           browser companion
+
+verify-bundle: 10 patch row(s), 16 entry point(s) 鈥?OK

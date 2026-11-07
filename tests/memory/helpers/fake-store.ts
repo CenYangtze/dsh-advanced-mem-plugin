@@ -1,8 +1,10 @@
 import type {
+  MemoryDistillerProgress,
   MemoryEdge,
   MemoryEdgeId,
   MemoryNode,
   MemoryNodeId,
+  MemoryProgressId,
   MemoryRecord,
   MemoryRecordId,
   MemoryScopeKey,
@@ -19,6 +21,7 @@ export class FakeMemoryStore implements MemoryStore {
   readonly recordRows = new Map<string, MemoryRecord>()
   readonly nodeRows = new Map<string, MemoryNode>()
   readonly edgeRows = new Map<string, MemoryEdge>()
+  readonly progressRows = new Map<string, MemoryDistillerProgress>()
 
   getRecord(id: MemoryRecordId): MemoryRecord | undefined {
     return this.recordRows.get(id)
@@ -59,6 +62,27 @@ export class FakeMemoryStore implements MemoryStore {
     return Promise.resolve()
   }
 
+  get progressStore(): this {
+    return this
+  }
+
+  getProgress(id: MemoryProgressId): MemoryDistillerProgress | undefined {
+    return this.progressRows.get(id)
+  }
+
+  progress(scopes: readonly MemoryScopeKey[]): Iterable<MemoryDistillerProgress> {
+    return [...this.progressRows.values()].filter(row => scopes.includes(row.scope))
+  }
+
+  putProgress(progress: MemoryDistillerProgress): Promise<void> {
+    this.progressRows.set(progress.id, progress)
+    return Promise.resolve()
+  }
+
+  eraseProgress(id: MemoryProgressId): Promise<boolean> {
+    return Promise.resolve(this.progressRows.delete(id))
+  }
+
   eraseNode(id: MemoryNodeId): Promise<boolean> {
     return Promise.resolve(this.nodeRows.delete(id))
   }
@@ -67,7 +91,11 @@ export class FakeMemoryStore implements MemoryStore {
     return Promise.resolve(this.edgeRows.delete(id))
   }
 
-  eraseRecord(id: MemoryRecordId): Promise<boolean> {
-    return Promise.resolve(this.recordRows.delete(id))
+  async eraseRecord(id: MemoryRecordId): Promise<boolean> {
+    const erased = this.recordRows.delete(id)
+    for (const [progressId, row] of this.progressRows) {
+      if (row.record === id) this.progressRows.delete(progressId)
+    }
+    return erased
   }
 }

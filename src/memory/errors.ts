@@ -22,6 +22,7 @@ export type MemoryErrorCode =
   | 'duplicate-provider'
   | 'unknown-item'
   | 'invalid-input'
+  | 'blocked-input'
   | 'embedder-mismatch'
   | 'retracted'
 

@@ -6,8 +6,10 @@
  */
 
 import type { JsonValue } from '@deepseek-ai/dsh-util-values'
+import type { MemoryEmbedderFailure } from './providers.ts'
 import type {
   MemoryAttachment,
+  MemoryCaptureInput,
   MemoryEdge,
   MemoryFidelity,
   MemoryNode,
@@ -20,7 +22,9 @@ import type {
   MemoryRecordKind,
   MemoryRecordUse,
   MemoryRelation,
+  MemorySafetyMetadata,
   MemoryScope,
+  MemoryScopeKey,
 } from './types.ts'
 
 /** One retrieval signal that contributed to a cue's placement. */
@@ -47,6 +51,8 @@ export type MemoryCue =
     readonly score: number
     /** Signals that placed this cue. */
     readonly signals: readonly MemorySignal[]
+    /** Redaction metadata for the safe view. */
+    readonly safety?: MemorySafetyMetadata
   }
   | {
     readonly kind: 'edge'
@@ -58,6 +64,8 @@ export type MemoryCue =
     readonly score: number
     /** Signals that placed this cue. */
     readonly signals: readonly MemorySignal[]
+    /** Redaction metadata for the safe view. */
+    readonly safety?: MemorySafetyMetadata
   }
   | {
     readonly kind: 'record'
@@ -86,6 +94,8 @@ export type MemoryCue =
     readonly score: number
     /** Signals that placed this cue. */
     readonly signals: readonly MemorySignal[]
+    /** Redaction metadata for the safe view. */
+    readonly safety?: MemorySafetyMetadata
   }
 
 /** A retrieval request against one scope chain. */
@@ -120,6 +130,12 @@ export interface MemoryQuery {
   readonly signal?: AbortSignal
 }
 
+/** A query-time embedding failure, reported rather than hidden by a lexical fallback. */
+export interface MemoryEmbeddingFailure extends MemoryEmbedderFailure {
+  /** Provider that failed, including its model and version identity. */
+  readonly provider: string
+}
+
 /** The answer to one {@link MemoryQuery}. */
 export interface MemoryRecall {
   /** The query text, echoed so a consumer can label the result without holding the request. */
@@ -130,6 +146,17 @@ export interface MemoryRecall {
   readonly truncated: boolean
   /** Whether a vector signal participated; false means lexical and graph only. */
   readonly semantic: boolean
+  /**
+   * Retrieval mode that actually ran, not merely which providers are mounted.
+   * `semantic` requires at least one usable stored vector ranked against a
+   * usable query vector; a provider that is present but fails or has nothing to
+   * compare is still `lexical`.
+   */
+  readonly mode: 'lexical' | 'semantic'
+  /** Set when a mounted embedder is unavailable or its query call failed; recall still returned. */
+  readonly embeddingFailure?: MemoryEmbeddingFailure
+  /** Redaction metadata for the externally used query, when filtering changed it. */
+  readonly safety?: MemorySafetyMetadata
 }
 
 /**
@@ -144,6 +171,8 @@ export interface MemoryProfile {
   readonly edges: readonly MemoryEdge[]
   /** Total active nodes in the scope chain, so a consumer can say what it left out. */
   readonly total: number
+  /** Redaction metadata for the safe view when any text was filtered or dropped. */
+  readonly safety?: MemorySafetyMetadata
 }
 
 /** A new layer-0 observation handed to the runtime. */
@@ -166,6 +195,8 @@ export interface MemoryObservation {
   readonly attachments?: readonly MemoryAttachment[]
   /** Where it came from in the session log. */
   readonly provenance?: MemoryProvenance
+  /** Capture length and truncation facts supplied by the observer. */
+  readonly capture?: MemoryCaptureInput
   /** Capture time; omitted uses the current clock. */
   readonly at?: number
 }
@@ -217,6 +248,52 @@ export interface MemoryAssertion {
   readonly at?: number
 }
 
+/**
+ * Replace one active belief with a new node identity.
+ *
+ * The target is addressed by id, never by a free-form label. New evidence must
+ * be active user-authored records in the same scope and must contain `quote`.
+ * The old node stays as a tombstone and a `supersedes` edge retains history.
+ */
+export interface MemoryReplacementRequest {
+  /** Scope shared by the target, evidence and replacement. */
+  readonly scope: MemoryScope
+  /** Active node being retired. */
+  readonly target: MemoryNodeId
+  /** Subject class; must match the target. */
+  readonly type: MemoryNodeType
+  /** Canonical label for the new node identity. */
+  readonly label: string
+  /** One-sentence statement of the new belief. */
+  readonly summary: string
+  /** Type-specific structured detail for the new node. */
+  readonly attributes?: Readonly<Record<string, JsonValue>>
+  /** Whether the user stated the replacement or the harness inferred it. */
+  readonly origin: MemoryOrigin
+  /** Initial belief; omitted uses the runtime default for the origin. */
+  readonly confidence?: number
+  /** Erosion half-life; omitted uses the runtime default for the origin. */
+  readonly halfLifeMs?: number | null
+  /** Active user-authored records that justify the replacement. */
+  readonly evidence: readonly MemoryRecordId[]
+  /** Verbatim fragment from one cited record; whitespace-normalized matching. */
+  readonly quote: string
+  /** One-sentence claim for the supersession edge; omitted derives it. */
+  readonly claim?: string
+  /** Replacement time; omitted uses the current clock. */
+  readonly at?: number
+}
+
+/** What one replacement created or replayed. */
+export interface MemoryReplacementResult {
+  /** The retired target. */
+  readonly replaced: MemoryNodeId
+  /** The new node identity, stable across retries of the same request. */
+  readonly replacement: MemoryNode
+  /** The `supersedes` edge from replacement to target. */
+  readonly edge: MemoryEdge
+}
+
 /** A layer-1 edge to create or reinforce between two existing nodes. */
 export interface MemoryRelationInput {
   /** Where the conclusion should live. */
@@ -253,6 +330,8 @@ export interface MemoryMaintenanceReport {
   readonly edgesCreated: number
   /** Layer-1 edges reinforced. */
   readonly edgesReinforced: number
+  /** Active nodes retired by a replacement in this pass. */
+  readonly replaced?: number
   /** Items tombstoned because their decayed confidence fell below the retirement floor. */
   readonly retired: number
   /** Layer-0 records erased because the scope exceeded its record budget. */

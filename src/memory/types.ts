@@ -25,6 +25,9 @@ export type MemoryNodeId = Branded<'MemoryNodeId'>
 /** Identity of one layer-1 edge. */
 export type MemoryEdgeId = Branded<'MemoryEdgeId'>
 
+/** Identity of one persisted consolidation-progress row. */
+export type MemoryProgressId = Branded<'MemoryProgressId'>
+
 /**
  * Brand a layer-0 record id.
  * @param id - raw identifier string.
@@ -50,6 +53,15 @@ export function MemoryNodeId(id: string): MemoryNodeId {
  */
 export function MemoryEdgeId(id: string): MemoryEdgeId {
   return id as MemoryEdgeId
+}
+
+/**
+ * Brand a consolidation-progress row id.
+ * @param id - raw identifier string.
+ * @returns the same string, typed as a progress id.
+ */
+export function MemoryProgressId(id: string): MemoryProgressId {
+  return id as MemoryProgressId
 }
 
 /**
@@ -244,7 +256,80 @@ export interface MemorySupport {
   readonly lastSeenAt: number
 }
 
-/** One layer-0 record: fine-grained raw material with its provenance and retrieval keys. */
+/** A non-sensitive description of one redaction applied at a memory boundary. */
+export interface MemoryRedaction {
+  /** Fixed category of the removed material. */
+  readonly category: 'private-key' | 'provider-token' | 'bearer-token' | 'secret-assignment' | 'blocked-literal' | 'attachment-dropped'
+  /** Number of matches replaced. */
+  readonly count: number
+  /** Fixed placeholder inserted in the saved text. */
+  readonly replacement: string
+}
+
+/**
+ * Safety metadata stored beside filtered content. It contains counts and lengths
+ * only; the removed original text is never retained here.
+ */
+export interface MemorySafetyMetadata {
+  /** UTF-16 code units in the input before filtering. */
+  readonly originalLength: number
+  /** UTF-16 code units in the retained text after filtering. */
+  readonly retainedLength: number
+  /** True when a policy rejected the input rather than redacting it. */
+  readonly blocked: boolean
+  /** Redactions applied to the retained text. */
+  readonly redactions: readonly MemoryRedaction[]
+}
+
+/** Capture-time length and truncation state, before and after filtering. */
+export interface MemoryCaptureMetadata extends MemorySafetyMetadata {
+  /** Whether capture removed a tail to fit its configured limit. */
+  readonly truncated: boolean
+  /** Unit used by both lengths. */
+  readonly lengthUnit: 'utf16-code-units'
+  /** Where truncation occurred when it did. */
+  readonly truncation?: 'tail-removed'
+}
+
+/** Capture metadata supplied before the runtime adds redaction details. */
+export interface MemoryCaptureInput {
+  /** UTF-16 code units in the original capture. */
+  readonly originalLength: number
+  /** UTF-16 code units kept by capture truncation. */
+  readonly retainedLength: number
+  /** Whether capture truncated the tail. */
+  readonly truncated: boolean
+  /** Unit used by both lengths. */
+  readonly lengthUnit: 'utf16-code-units'
+}
+
+/** Result of filtering one text at a write or external-request boundary. */
+export interface MemoryFilterResult {
+  /** Text safe to persist or send externally. Empty when blocked. */
+  readonly text: string
+  /** Non-sensitive diagnostic metadata. */
+  readonly metadata: MemorySafetyMetadata
+}
+
+/** Deployment policy for minimal, explainable capture filtering. */
+export interface MemorySafetyConfig {
+  /** Redact PEM private-key blocks. */
+  readonly redactPrivateKeys: boolean
+  /** Redact high-confidence provider tokens such as AWS, OpenAI and GitHub keys. */
+  readonly redactProviderTokens: boolean
+  /** Redact `Bearer` authorization values. */
+  readonly redactBearerTokens: boolean
+  /** Redact explicit password/api_key/secret/token assignments. */
+  readonly redactSecretAssignments: boolean
+  /** Reject the input on a sensitive pattern instead of redacting it. */
+  readonly rejectSensitivePatterns: boolean
+  /** Literal substrings that must be rejected, matched case-insensitively. */
+  readonly blockedLiterals: string[]
+}
+
+/**
+ * One layer-0 record: fine-grained raw material with its provenance and retrieval keys.
+ */
 export interface MemoryRecord {
   /** Stable record identity. */
   readonly id: MemoryRecordId
@@ -268,6 +353,8 @@ export interface MemoryRecord {
   readonly attachments: readonly MemoryAttachment[]
   /** Where the record came from in the session log. */
   readonly provenance: MemoryProvenance
+  /** Capture length, truncation and redaction metadata; never the removed text. */
+  readonly capture?: MemoryCaptureMetadata
   /** Epoch milliseconds of capture. */
   readonly createdAt: number
   /** Dense vector when an embedder was composed at capture time. */
@@ -288,6 +375,35 @@ export interface MemoryRecord {
    * the live one without working it out from dates alone.
    */
   readonly supersededBy?: MemoryRecordId
+}
+
+/**
+ * Outcome of one distiller version's inspection of one layer-0 record.
+ *
+ * This is deliberately separate from {@link MemoryRecord.promotedTo}: an empty
+ * result is a successful check, not a citation, and must not be represented by a
+ * fake layer-1 reference. A failed check stays retryable up to the distiller's
+ * configured attempt bound.
+ */
+export interface MemoryDistillerProgress {
+  /** Stable identity: scope, distiller, version and record, encoded once. */
+  readonly id: MemoryProgressId
+  /** Partition the record belongs to. */
+  readonly scope: MemoryScopeKey
+  /** Distiller name that inspected the record. */
+  readonly distiller: string
+  /** Distiller implementation/version; a bump starts a new progress key. */
+  readonly version: string
+  /** The layer-0 record this row describes. */
+  readonly record: MemoryRecordId
+  /** Successful empty check, successful proposal, retryable failure, or permanent skip. */
+  readonly status: 'empty' | 'proposed' | 'failed' | 'skipped'
+  /** Fixed reason for a permanently skipped record; absent for other statuses. */
+  readonly skipReason?: 'input-too-large' | 'blocked-sensitive'
+  /** Attempts counted for this distiller version; bounded for failures. */
+  readonly attempts: number
+  /** Epoch milliseconds of the last attempt. */
+  readonly updatedAt: number
 }
 
 /**
@@ -343,6 +459,8 @@ export interface MemoryNode {
   readonly evidence: readonly MemoryRecordId[]
   /** Whether the user stated this or the harness concluded it. */
   readonly origin: MemoryOrigin
+  /** Redaction metadata for filtered summary/label/attributes. */
+  readonly safety?: MemorySafetyMetadata
   /** Lifecycle state. */
   readonly status: MemoryStatus
   /** Node that replaced this one, set when `status` is `superseded`. */
@@ -377,6 +495,8 @@ export interface MemoryEdge {
   readonly evidence: readonly MemoryRecordId[]
   /** Whether the user stated this or the harness concluded it. */
   readonly origin: MemoryOrigin
+  /** Redaction metadata for the filtered claim. */
+  readonly safety?: MemorySafetyMetadata
   /** Lifecycle state. */
   readonly status: MemoryStatus
   /** Edge that replaced this one, set when `status` is `superseded`. */

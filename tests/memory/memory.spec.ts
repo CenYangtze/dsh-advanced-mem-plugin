@@ -30,6 +30,14 @@ const baseConfig: Config = {
   duplicateThreshold: 1,
   diversityThreshold: 1,
   vectorWeight: 1,
+  safety: {
+    redactPrivateKeys: true,
+    redactProviderTokens: true,
+    redactBearerTokens: true,
+    redactSecretAssignments: true,
+    rejectSensitivePatterns: false,
+    blockedLiterals: [],
+  },
 }
 
 const workspace: MemoryScope = { kind: 'workspace', workspace: '/repo' }
@@ -55,6 +63,27 @@ const keywordEmbedder: MemoryEmbedder = {
       lower.includes('lint') ? 1 : 0,
     ]
   })),
+}
+
+/** An embedder whose SDK path is unavailable, used to prove capture survives it. */
+const failingEmbedder: MemoryEmbedder = {
+  name: 'offline',
+  dimensions: 3,
+  embed: () => Promise.reject(new Error('sdk offline')),
+}
+
+/** An embedder that returns a syntactically valid but directionless vector. */
+const zeroEmbedder: MemoryEmbedder = {
+  name: 'zero',
+  dimensions: 3,
+  embed: texts => Promise.resolve(texts.map(() => [0, 0, 0])),
+}
+
+/** An embedder whose squared norm overflows, which must not become a NaN or zero vector. */
+const overflowEmbedder: MemoryEmbedder = {
+  name: 'overflow',
+  dimensions: 3,
+  embed: texts => Promise.resolve(texts.map(() => [1e308, 1e308, 1e308])),
 }
 
 describe('provider registration', () => {
@@ -110,6 +139,16 @@ describe('remember', () => {
       scope: workspace, kind: 'note', text: 'deploy checklist', fidelity: 'verbatim',
     })
     expect(record.embedding).toEqual({ model: 'keyword', dimensions: 3, vector: [1, 0, 0] })
+  })
+
+  it('keeps the raw record when the embedding SDK fails', async () => {
+    const { runtime, store } = harness()
+    runtime.registerEmbedder(failingEmbedder)
+    const record = await runtime.remember({
+      scope: workspace, kind: 'user-message', text: 'deploy on friday', fidelity: 'verbatim',
+    })
+    expect(record.embedding).toBeUndefined()
+    expect(store.getRecord(record.id)?.text).toBe('deploy on friday')
   })
 })
 
@@ -256,7 +295,116 @@ describe('recall', () => {
     const semantic = harness()
     semantic.runtime.registerEmbedder(keywordEmbedder)
     await semantic.runtime.remember({ scope: workspace, kind: 'note', text: 'deploy on friday', fidelity: 'verbatim' })
-    expect((await semantic.runtime.recall({ text: 'deploy', scopes: [workspace] })).semantic).toBe(true)
+    const recall = await semantic.runtime.recall({ text: 'deploy', scopes: [workspace] })
+    expect(recall.semantic).toBe(true)
+    expect(recall.mode).toBe('semantic')
+  })
+
+  it('falls back to lexical and reports the failure when query embedding fails', async () => {
+    const { runtime } = harness()
+    let calls = 0
+    runtime.registerEmbedder({
+      name: 'flaky',
+      dimensions: 3,
+      embed: (texts) => {
+        calls += 1
+        if (calls > 1) return Promise.reject(new Error('query sdk down'))
+        return Promise.resolve(texts.map(() => [1, 0, 0]))
+      },
+    })
+    await runtime.remember({ scope: workspace, kind: 'note', text: 'deploy on friday', fidelity: 'verbatim' })
+    const recall = await runtime.recall({ text: 'deploy', scopes: [workspace] })
+    expect(recall.cues.length).toBeGreaterThan(0)
+    expect(recall.semantic).toBe(false)
+    expect(recall.mode).toBe('lexical')
+    expect(recall.embeddingFailure).toEqual({
+      provider: 'flaky',
+      code: 'sdk-failure',
+      reason: 'embedding provider reported an SDK failure',
+    })
+  })
+
+  it('does not put a generic embedder message into the recall diagnostic', async () => {
+    const { runtime } = harness()
+    let calls = 0
+    runtime.registerEmbedder({
+      name: 'leaky',
+      dimensions: 3,
+      embed: (texts) => {
+        calls += 1
+        if (calls > 1) return Promise.reject(new Error('secret query text from the user'))
+        return Promise.resolve(texts.map(() => [1, 0, 0]))
+      },
+    })
+    await runtime.remember({ scope: workspace, kind: 'note', text: 'deploy on friday', fidelity: 'verbatim' })
+    const recall = await runtime.recall({ text: 'deploy', scopes: [workspace] })
+    expect(recall.embeddingFailure?.code).toBe('sdk-failure')
+    expect(recall.embeddingFailure?.reason).toBe('embedding provider reported an SDK failure')
+    expect(JSON.stringify(recall.embeddingFailure)).not.toContain('secret query text')
+  })
+
+  it('reports an unavailable provider even when no record carries a vector', async () => {
+    const { runtime, store } = harness()
+    let called = false
+    runtime.registerEmbedder({
+      name: 'unavailable',
+      dimensions: 3,
+      unavailable: { code: 'not-found', reason: 'secret reason from a provider' },
+      embed: () => {
+        called = true
+        return Promise.reject(new Error('must not be called'))
+      },
+    })
+    const record = await runtime.remember({ scope: workspace, kind: 'note', text: 'deploy on friday', fidelity: 'verbatim' })
+    expect(record.embedding).toBeUndefined()
+    expect(called).toBe(false)
+    expect(store.getRecord(record.id)?.text).toBe('deploy on friday')
+    const recall = await runtime.recall({ text: 'deploy', scopes: [workspace] })
+    expect(recall.mode).toBe('lexical')
+    expect(recall.embeddingFailure).toEqual({
+      provider: 'unavailable',
+      code: 'not-found',
+      reason: 'embedding provider runner is unavailable',
+    })
+  })
+
+  it('does not claim semantic mode when the vector has no direction', async () => {
+    const { runtime } = harness()
+    runtime.registerEmbedder(zeroEmbedder)
+    await runtime.remember({ scope: workspace, kind: 'note', text: 'deploy on friday', fidelity: 'verbatim' })
+    const recall = await runtime.recall({ text: 'deploy', scopes: [workspace] })
+    expect(recall.semantic).toBe(false)
+    expect(recall.mode).toBe('lexical')
+    expect(recall.embeddingFailure).toBeUndefined()
+  })
+
+  it('does not store a vector whose norm overflows', async () => {
+    const { runtime, store } = harness()
+    runtime.registerEmbedder(overflowEmbedder)
+    const record = await runtime.remember({
+      scope: workspace, kind: 'note', text: 'deploy on friday', fidelity: 'verbatim',
+    })
+    expect(record.embedding).toBeUndefined()
+    expect(store.getRecord(record.id)?.embedding).toBeUndefined()
+    const recall = await runtime.recall({ text: 'deploy', scopes: [workspace] })
+    expect(recall.mode).toBe('lexical')
+    expect(recall.semantic).toBe(false)
+  })
+
+  it('ignores an unusable stored vector instead of ranking against it', async () => {
+    const { runtime, store } = harness()
+    runtime.registerEmbedder(keywordEmbedder)
+    const record = await runtime.remember({
+      scope: workspace, kind: 'note', text: 'deploy on friday', fidelity: 'verbatim',
+    })
+    await store.putRecord({
+      ...record,
+      embedding: { model: 'keyword', dimensions: 3, vector: [Number.NaN, 0, 0] },
+    })
+    const recall = await runtime.recall({ text: 'deploy', scopes: [workspace] })
+    expect(recall.mode).toBe('lexical')
+    expect(recall.semantic).toBe(false)
+    expect(recall.embeddingFailure).toBeUndefined()
   })
 
   it('honors the fidelity floor so derived material cannot drive a strict consumer', async () => {

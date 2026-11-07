@@ -14,10 +14,12 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import type {
+  MemoryDistillerProgress,
   MemoryEdge,
   MemoryEdgeId,
   MemoryNode,
   MemoryNodeId,
+  MemoryProgressId,
   MemoryRecord,
   MemoryRecordId,
   MemoryScopeKey,
@@ -29,6 +31,7 @@ import { memoryDomainSpec } from './spec.ts'
 
 export {
   MEMORY_DOMAIN_VERSION,
+  memoryDistillerProgressSchema,
   memoryDomainSpec,
   memoryEdgeSchema,
   memoryNodeSchema,
@@ -100,6 +103,14 @@ class ScopeIndex<T extends ScopedItem> {
   }
 
   /**
+   * Enumerate every item across all partitions.
+   * @returns a snapshot array.
+   */
+  values(): T[] {
+    return [...this.byScope.values()].flatMap(partition => [...partition.values()])
+  }
+
+  /**
    * Write one item durably and refresh the partition index.
    *
    * A rescoped item is removed from its old partition first: memory items keep
@@ -138,6 +149,7 @@ export class DomainMemoryStore implements MemoryStore {
   private readonly recordIndex: ScopeIndex<MemoryRecord>
   private readonly nodeIndex: ScopeIndex<MemoryNode>
   private readonly edgeIndex: ScopeIndex<MemoryEdge>
+  private readonly progressIndex: ScopeIndex<MemoryDistillerProgress>
 
   /**
    * @param domain - the opened memory domain; the caller owns closing it.
@@ -159,6 +171,7 @@ export class DomainMemoryStore implements MemoryStore {
     )
     this.nodeIndex = new ScopeIndex(domain.table('nodes'))
     this.edgeIndex = new ScopeIndex(domain.table('edges'))
+    this.progressIndex = new ScopeIndex(domain.table('progress'))
   }
 
   /**
@@ -242,13 +255,61 @@ export class DomainMemoryStore implements MemoryStore {
     return this.edgeIndex.put(edge)
   }
 
+  /** Durable consolidation progress, exposed as the store's progress capability. */
+  get progressStore(): this {
+    return this
+  }
+
   /**
-   * Permanently remove one layer-0 record.
+   * Read one consolidation-progress row.
+   * @param id - the row identity.
+   * @returns the row, or `undefined` when the id is unknown.
+   */
+  getProgress(id: MemoryProgressId): MemoryDistillerProgress | undefined {
+    return this.progressIndex.get(id)
+  }
+
+  /**
+   * Enumerate consolidation-progress rows across partitions.
+   * @param scopes - the partition keys to read.
+   * @returns a snapshot iterable.
+   */
+  progress(scopes: readonly MemoryScopeKey[]): Iterable<MemoryDistillerProgress> {
+    return this.progressIndex.list(scopes)
+  }
+
+  /**
+   * Insert or replace one consolidation-progress row.
+   * @param progress - the complete row.
+   * @returns resolution once the write is durable.
+   */
+  putProgress(progress: MemoryDistillerProgress): Promise<void> {
+    return this.progressIndex.put(progress)
+  }
+
+  /**
+   * Permanently remove one consolidation-progress row.
+   * @param id - the row identity.
+   * @returns whether a row existed to erase.
+   */
+  eraseProgress(id: MemoryProgressId): Promise<boolean> {
+    return this.progressIndex.erase(id)
+  }
+
+  /**
+   * Permanently remove one layer-0 record and its progress rows.
+   *
+   * Progress is derived from a record, so keeping it after erasure would leave a
+   * growing orphan set. Every distiller and version for that record is removed.
    * @param id - the record identity.
    * @returns whether a record existed to erase.
    */
-  eraseRecord(id: MemoryRecordId): Promise<boolean> {
-    return this.recordIndex.erase(id)
+  async eraseRecord(id: MemoryRecordId): Promise<boolean> {
+    const erased = await this.recordIndex.erase(id)
+    for (const row of this.progressIndex.values()) {
+      if (row.record === id) await this.progressIndex.erase(row.id)
+    }
+    return erased
   }
 
   eraseNode(id: MemoryNodeId): Promise<boolean> {

@@ -35,6 +35,10 @@
       "types": "./lib/memory-embedding-hash/index.d.ts",
       "default": "./lib/memory-embedding-hash/index.js"
     },
+    "./embedding-kylin": {
+      "types": "./lib/memory-embedding-kylin/index.d.ts",
+      "default": "./lib/memory-embedding-kylin/index.js"
+    },
     "./observer": {
       "types": "./lib/memory-observer/index.d.ts",
       "default": "./lib/memory-observer/index.js"

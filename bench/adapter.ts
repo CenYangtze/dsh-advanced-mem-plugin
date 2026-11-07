@@ -366,6 +366,14 @@ function memoryConfig(options: BenchOptions): MemoryConfig {
     duplicateThreshold: 0.8,
     diversityThreshold: 0.7,
     vectorWeight: options.vectorWeight,
+    safety: {
+      redactPrivateKeys: true,
+      redactProviderTokens: true,
+      redactBearerTokens: true,
+      redactSecretAssignments: true,
+      rejectSensitivePatterns: false,
+      blockedLiterals: [],
+    },
   }
 }
 
@@ -381,6 +389,21 @@ function distillerConfig(): consolidation.Config {
     minStatements: 1,
     minSubjectLength: 3,
     maxSubjectLength: 60,
+    behaviorLookbackRecords: 20,
+    progressMaxAttempts: 3,
+    semanticEnabled: false,
+    semanticMaxRecords: 6,
+    semanticMaxInputCharacters: 12000,
+    semanticMaxOutputBytes: 32768,
+    semanticMaxCandidates: 8,
+    semanticMaxExistingNodes: 12,
+    semanticMaxTokens: 1200,
+    semanticTemperature: 0,
+    semanticTimeoutMs: 30000,
+    semanticMaxFieldLength: 160,
+    semanticMaxCallsPerPass: 2,
+    semanticMaxConcurrentCalls: 1,
+    semanticPromptVersion: 'semantic-v3',
     consolidateEveryTurns: 1_000_000,
     sweepEveryTurns: 1_000_000,
   }

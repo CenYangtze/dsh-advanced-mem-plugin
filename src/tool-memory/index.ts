@@ -16,6 +16,7 @@ import z from '@deepseek-ai/schemastery'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { ToolExecution } from '@deepseek-ai/dsh-tools'
 import { sessionScope } from '../memory/index.ts'
+import { MemoryNodeId, MemoryRecordId } from '../memory/index.ts'
 import type { MemoryCue, MemoryNode, MemoryScope } from '../memory/index.ts'
 import { MEMORY_PROTOCOL, MEMORY_SECTION_NAME, MEMORY_SECTION_ORDER } from './prompt.ts'
 
@@ -93,6 +94,7 @@ function searchScopes(choice: string | undefined, exec: Readonly<ToolExecution>)
 
 /** Project one cue onto the tool's structured output. */
 function cueOutput(cue: MemoryCue): {
+  id: string
   kind: string
   label: string
   detail: string
@@ -103,6 +105,7 @@ function cueOutput(cue: MemoryCue): {
   switch (cue.kind) {
     case 'node':
       return {
+        id: cue.node.id,
         kind: cue.node.type,
         label: cue.node.label,
         detail: cue.node.summary,
@@ -112,6 +115,7 @@ function cueOutput(cue: MemoryCue): {
       }
     case 'edge':
       return {
+        id: cue.edge.id,
         kind: `relation:${cue.edge.relation}`,
         label: cue.endpoints.map(endpoint => endpoint.label).join(' → '),
         detail: cue.edge.claim,
@@ -121,6 +125,7 @@ function cueOutput(cue: MemoryCue): {
       }
     case 'record':
       return {
+        id: cue.record.id,
         kind: `episode:${cue.record.kind}`,
         label: new Date(cue.record.createdAt).toISOString().slice(0, 10),
         detail: cue.record.text,
@@ -208,6 +213,7 @@ export function apply(ctx: Context, config: Config): void {
               type: 'object',
               additionalProperties: false,
               properties: {
+                id: { type: 'string', required: true },
                 kind: { type: 'string', required: true },
                 label: { type: 'string', required: true },
                 detail: { type: 'string', required: true },
@@ -218,31 +224,33 @@ export function apply(ctx: Context, config: Config): void {
             },
           },
           truncated: { type: 'boolean', required: true },
+          query: { type: 'string', required: true, description: 'The filtered query actually used.' },
         },
       },
       render: (args, value) => [{
         type: 'text',
         text: value.results.length === 0
-          ? `No memories matched ${JSON.stringify(args.query)}.`
-          : `${value.results.length} memories for ${JSON.stringify(args.query)}:\n`
+          ? `No memories matched ${JSON.stringify(value.query)}.`
+          : `${value.results.length} memories for ${JSON.stringify(value.query)}:\n`
             + value.results
-              .map(result => `- [${result.kind} · ${result.confidence} · ${result.origin}] ${result.detail}`)
+              .map(result => `- [${result.kind} · ${result.confidence} · ${result.origin}] ${result.detail} (${result.id})`)
               .join('\n')
             + (value.truncated ? '\n(more matched; narrow the query or raise the limit)' : ''),
       }],
     },
     async execute(args, exec) {
       const limit = Math.min(args.limit ?? config.defaultSearchLimit, config.maxSearchLimit)
+      const filtered = ctx.memory.filterExternalText(args.query)
       const recall = await ctx.memory.recall({
-        text: args.query,
+        text: filtered.text,
         scopes: searchScopes(args.scope, exec),
         limit,
         ...args.include_episodes === undefined ? {} : { includeEpisodes: args.include_episodes },
         signal: exec.signal,
       })
-      return { results: recall.cues.map(cueOutput), truncated: recall.truncated }
+      return { results: recall.cues.map(cueOutput), truncated: recall.truncated, query: recall.query }
     },
-    presentCall: args => ({ card: 'generic', title: `Search memory: ${args.query}`, kind: 'read' }),
+    presentCall: args => ({ card: 'generic', title: 'Search memory', kind: 'read' }),
   }))
 
   ctx.tools.register(defineTool({
@@ -250,9 +258,18 @@ export function apply(ctx: Context, config: Config): void {
     description:
       'Remember something that will still matter in a later session: a preference or constraint the '
       + 'user stated, a correction they made, or a durable fact about their project or how they work. '
-      + 'Writing the same label again reinforces the existing memory rather than duplicating it. Do '
-      + 'not store transient task state, credentials, or a conclusion drawn from one ambiguous signal.',
+      + 'Writing the same label again reinforces the existing memory rather than duplicating it. To '
+      + 'replace a belief the user corrected, set operation to `replace`, pass the target node id from '
+      + 'memory_search, and cite active user record ids with a verbatim quote. Do not store transient '
+      + 'task state, credentials, or a conclusion drawn from one ambiguous signal.',
     parameters: {
+      operation: {
+        type: 'string',
+        enum: ['add', 'replace'],
+        description:
+          'Omit or use `add` for a new memory. Use `replace` only when the user corrected an existing '
+          + 'belief and you can cite a real user record that says so.',
+      },
       type: {
         type: 'string',
         required: true,
@@ -280,6 +297,23 @@ export function apply(ctx: Context, config: Config): void {
           'True only when the user said this outright. A stated memory does not fade; one you '
           + 'inferred does, so claiming this falsely makes a guess permanent.',
       },
+      target_id: {
+        type: 'string',
+        description:
+          'Active node id to replace, from memory_search. Required for `replace`; omit for `add`.',
+      },
+      evidence_record_ids: {
+        type: 'array',
+        items: { type: 'string' },
+        description:
+          'Active user record ids that prove the new wording. Required for `replace`; these must '
+          + 'come from memory_search with episodes included, not from your own notes.',
+      },
+      quote: {
+        type: 'string',
+        description:
+          'Verbatim fragment from one cited user record. Required for `replace`; whitespace may differ.',
+      },
       scope: {
         type: 'string',
         enum: [...SCOPE_CHOICES],
@@ -305,16 +339,21 @@ export function apply(ctx: Context, config: Config): void {
         type: 'object',
         additionalProperties: false,
         properties: {
+          id: { type: 'string', required: true },
           label: { type: 'string', required: true },
           scope: { type: 'string', required: true },
           confidence: { type: 'number', required: true },
           linked: { type: 'boolean', required: true },
+          replaced: { type: 'string', description: 'Retired node id when this was a replacement.' },
         },
       },
       render: (_args, value) => [{
         type: 'text',
-        text: `Remembered "${value.label}" in ${value.scope} scope at confidence ${value.confidence}`
-          + `${value.linked ? ' and linked it' : ''}.`,
+        text: value.replaced === undefined
+          ? `Remembered "${value.label}" in ${value.scope} scope at confidence ${value.confidence}`
+            + `${value.linked ? ' and linked it' : ''}.`
+          : `Replaced ${value.replaced} with "${value.label}" in ${value.scope} scope at confidence ${value.confidence}`
+            + `${value.linked ? ' and linked it' : ''}.`,
       }],
     },
     async execute(args, exec) {
@@ -326,6 +365,54 @@ export function apply(ctx: Context, config: Config): void {
         )
       }
       const scope = resolveScope(args.scope ?? 'workspace', exec)
+      const operation = args.operation ?? 'add'
+      let linked = false
+
+      if (operation === 'replace') {
+        if (args.target_id === undefined || args.evidence_record_ids === undefined
+          || args.evidence_record_ids.length === 0 || args.quote === undefined) {
+          throw new Error('`replace` requires `target_id`, `evidence_record_ids` and `quote`')
+        }
+        const evidenceIds = args.evidence_record_ids.map(id => MemoryRecordId(id))
+        const result = await ctx.memory.replace({
+          scope,
+          target: MemoryNodeId(args.target_id),
+          type: args.type,
+          label: args.label,
+          summary,
+          origin: args.stated_by_user ? 'asserted' : 'inferred',
+          evidence: evidenceIds,
+          quote: args.quote,
+        })
+        if (args.related_to !== undefined) {
+          if (args.relation === undefined || args.claim === undefined) {
+            throw new Error('`related_to` requires both `relation` and `claim`')
+          }
+          const target = findByLabel(ctx, [scope], args.related_to)
+          if (target === undefined) {
+            throw new Error(`no memory labelled ${JSON.stringify(args.related_to)} in ${scope.kind} scope`)
+          }
+          await ctx.memory.relate({
+            scope,
+            from: result.replacement.id,
+            to: target.id,
+            relation: args.relation,
+            claim: args.claim,
+            origin: args.stated_by_user ? 'asserted' : 'inferred',
+            evidence: evidenceIds,
+          })
+          linked = true
+        }
+        return {
+          id: result.replacement.id,
+          label: result.replacement.label,
+          scope: scope.kind,
+          confidence: Number(result.replacement.confidence.toFixed(3)),
+          linked,
+          replaced: result.replaced,
+        }
+      }
+
       let target: MemoryNode | undefined
       if (args.related_to !== undefined) {
         if (args.relation === undefined || args.claim === undefined) {
@@ -350,7 +437,6 @@ export function apply(ctx: Context, config: Config): void {
         origin: args.stated_by_user ? 'asserted' : 'inferred',
         evidence: [evidence.id],
       })
-      let linked = false
       if (target !== undefined && args.relation !== undefined && args.claim !== undefined) {
         await ctx.memory.relate({
           scope,
@@ -364,6 +450,7 @@ export function apply(ctx: Context, config: Config): void {
         linked = true
       }
       return {
+        id: node.id,
         label: node.label,
         scope: scope.kind,
         confidence: Number(node.confidence.toFixed(3)),

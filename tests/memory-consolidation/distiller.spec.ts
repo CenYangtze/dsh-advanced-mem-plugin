@@ -10,6 +10,8 @@ const policy: DistillerPolicy = {
   minSequenceLength: 2,
   maxSequenceLength: 3,
   minSequenceRepeats: 2,
+  behaviorLookbackRecords: 10,
+  progressMaxAttempts: 3,
 }
 
 let counter = 0

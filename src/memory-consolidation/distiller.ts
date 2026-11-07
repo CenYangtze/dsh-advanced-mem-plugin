@@ -18,6 +18,7 @@ import type {
   MemoryDistillation,
   MemoryDistillInput,
   MemoryDistiller,
+  MemoryDistillerProgressPolicy,
   MemoryRecord,
   MemoryRecordId,
 } from '../memory/index.ts'
@@ -36,6 +37,10 @@ export interface DistillerPolicy {
   readonly maxSequenceLength: number
   /** Times a sequence must recur before it is proposed as a procedure. */
   readonly minSequenceRepeats: number
+  /** Prior processed records included so a behavior seen across turns can still repeat. */
+  readonly behaviorLookbackRecords: number
+  /** Bounded retries for a record whose distillation or application failed. */
+  readonly progressMaxAttempts: number
 }
 
 /**
@@ -246,12 +251,22 @@ function relationEdges(
 export class BehaviorCycleDistiller implements MemoryDistiller {
   /** Provider name, attributed on the proposals it makes. */
   readonly name = 'behavior-cycle'
+  /** Progress identity; bump when the mining semantics change to replay records. */
+  readonly version = '1'
+  /** Window progress: new actions read bounded prior context but advance only new records. */
+  readonly progress: MemoryDistillerProgressPolicy
 
   /**
    * @param rank - ordering among mounted distillers; this one runs first because it is cheap and deterministic.
    * @param policy - the mining thresholds from the plugin configuration.
    */
-  constructor(readonly rank: number, private readonly policy: DistillerPolicy) {}
+  constructor(readonly rank: number, private readonly policy: DistillerPolicy) {
+    this.progress = {
+      mode: 'window',
+      maxAttempts: policy.progressMaxAttempts,
+      lookback: policy.behaviorLookbackRecords,
+    }
+  }
 
   /**
    * Mine one window of layer-0 records.

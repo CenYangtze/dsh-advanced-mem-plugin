@@ -11,7 +11,16 @@
  */
 
 import { z } from 'zod'
-import type { MemoryEdge, MemoryEdgeId, MemoryNode, MemoryNodeId, MemoryRecord, MemoryRecordId } from '../memory/index.ts'
+import type {
+  MemoryDistillerProgress,
+  MemoryEdge,
+  MemoryEdgeId,
+  MemoryNode,
+  MemoryNodeId,
+  MemoryProgressId,
+  MemoryRecord,
+  MemoryRecordId,
+} from '../memory/index.ts'
 import { defineDomain, domainTable } from '@deepseek-ai/dsh-storage-domain'
 
 /** Format version of the memory medium; a differently stamped medium is rejected at open. */
@@ -55,6 +64,32 @@ const embeddingSchema = z.object({
   message: 'memory embedding vector length must equal its declared dimensions',
 })
 
+const redactionSchema = z.object({
+  category: z.union([
+    z.literal('private-key'),
+    z.literal('provider-token'),
+    z.literal('bearer-token'),
+    z.literal('secret-assignment'),
+    z.literal('blocked-literal'),
+    z.literal('attachment-dropped'),
+  ]),
+  count: z.number().int().nonnegative(),
+  replacement: z.string(),
+})
+
+const safetySchema = z.object({
+  originalLength: z.number().int().nonnegative(),
+  retainedLength: z.number().int().nonnegative(),
+  blocked: z.boolean(),
+  redactions: z.array(redactionSchema),
+})
+
+const captureSchema = safetySchema.extend({
+  truncated: z.boolean(),
+  lengthUnit: z.literal('utf16-code-units'),
+  truncation: z.literal('tail-removed').optional(),
+})
+
 const supportSchema = z.object({
   observations: z.number().int().nonnegative(),
   reinforcements: z.number().int().nonnegative(),
@@ -96,6 +131,7 @@ export const memoryRecordSchema = z.object({
   terms: z.array(z.string()),
   attachments: z.array(attachmentSchema),
   provenance: provenanceSchema,
+  capture: captureSchema.optional(),
   createdAt: epochMs,
   embedding: embeddingSchema.optional(),
   promotedTo: z.array(z.string()),
@@ -125,6 +161,7 @@ export const memoryNodeSchema = z.object({
   support: supportSchema,
   evidence: z.array(z.string().min(1)),
   origin: z.union([z.literal('asserted'), z.literal('inferred')]),
+  safety: safetySchema.optional(),
   status: statusSchema,
   supersededBy: z.string().min(1).optional(),
   createdAt: epochMs,
@@ -154,16 +191,36 @@ export const memoryEdgeSchema = z.object({
   support: supportSchema,
   evidence: z.array(z.string().min(1)),
   origin: z.union([z.literal('asserted'), z.literal('inferred')]),
+  safety: safetySchema.optional(),
   status: statusSchema,
   supersededBy: z.string().min(1).optional(),
   createdAt: epochMs,
   updatedAt: epochMs,
 }) as unknown as z.ZodType<MemoryEdge>
 
+/** Runtime schema for one persisted consolidation-progress row. */
+export const memoryDistillerProgressSchema = z.object({
+  id: z.string().min(1),
+  scope: z.string().min(1),
+  distiller: z.string().min(1),
+  version: z.string().min(1),
+  record: z.string().min(1),
+  status: z.union([
+    z.literal('empty'),
+    z.literal('proposed'),
+    z.literal('failed'),
+    z.literal('skipped'),
+  ]),
+  skipReason: z.union([z.literal('input-too-large'), z.literal('blocked-sensitive')]).optional(),
+  attempts: z.number().int().nonnegative(),
+  updatedAt: epochMs,
+}) as unknown as z.ZodType<MemoryDistillerProgress>
+
 /**
- * The memory domain: one table per layer-0 and layer-1 element. Keys are the
- * branded item ids, so a row is addressable without an index, and scope
- * partitioning is an in-memory index the store rebuilds at open.
+ * The memory domain: one table per layer-0 and layer-1 element plus durable
+ * consolidation progress. Keys are the branded item ids, so a row is addressable
+ * without an index, and scope partitioning is an in-memory index the store
+ * rebuilds at open.
  */
 export const memoryDomainSpec = defineDomain({
   name: 'memory',
@@ -172,5 +229,6 @@ export const memoryDomainSpec = defineDomain({
     records: domainTable<MemoryRecordId, MemoryRecord>(memoryRecordSchema),
     nodes: domainTable<MemoryNodeId, MemoryNode>(memoryNodeSchema),
     edges: domainTable<MemoryEdgeId, MemoryEdge>(memoryEdgeSchema),
+    progress: domainTable<MemoryProgressId, MemoryDistillerProgress>(memoryDistillerProgressSchema),
   },
 })

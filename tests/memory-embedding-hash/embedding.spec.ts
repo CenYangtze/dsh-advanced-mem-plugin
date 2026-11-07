@@ -21,6 +21,14 @@ const memoryConfig: MemoryConfig = {
   duplicateThreshold: 1,
   diversityThreshold: 1,
   vectorWeight: 1,
+  safety: {
+    redactPrivateKeys: true,
+    redactProviderTokens: true,
+    redactBearerTokens: true,
+    redactSecretAssignments: true,
+    rejectSensitivePatterns: false,
+    blockedLiterals: [],
+  },
 }
 
 describe('embedText', () => {

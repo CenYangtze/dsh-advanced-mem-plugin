@@ -220,14 +220,20 @@ export function toolDigest(args: unknown, limit: number): string {
 }
 
 /**
- * Reduce text to the configured budget.
+ * Reduce text to the configured budget without splitting a surrogate pair.
  * @param text - the captured text.
- * @param limit - maximum characters to keep.
+ * @param limit - maximum UTF-16 code units to keep.
  * @returns the text and whether it was reduced, which decides the record's fidelity.
  */
 function truncate(text: string, limit: number): { text: string; reduced: boolean } {
   if (text.length <= limit) return { text, reduced: false }
-  return { text: text.slice(0, limit), reduced: true }
+  let end = limit
+  if (end > 0 && end < text.length) {
+    const previous = text.charCodeAt(end - 1)
+    const next = text.charCodeAt(end)
+    if (previous >= 0xD800 && previous <= 0xDBFF && next >= 0xDC00 && next <= 0xDFFF) end--
+  }
+  return { text: text.slice(0, end), reduced: true }
 }
 
 /**
@@ -279,8 +285,8 @@ export function apply(ctx: Context, config: Config): void {
   const enqueue = (observation: MemoryObservation): void => {
     chain = chain.then(async () => {
       await ctx.memory.remember(observation)
-    }).catch((error: unknown) => {
-      ctx.logger.warn(`memory-observer: capture failed: ${String(error)}`)
+    }).catch(() => {
+      ctx.logger.warn('memory-observer: capture failed')
     })
   }
 
@@ -296,6 +302,12 @@ export function apply(ctx: Context, config: Config): void {
         const attachments = attachmentsOf(message.content)
         if (text.length === 0 && attachments.length === 0) return
         const reduced = truncate(text, config.maxTextLength)
+        const capture = {
+          originalLength: text.length,
+          retainedLength: reduced.text.length,
+          truncated: reduced.reduced,
+          lengthUnit: 'utf16-code-units' as const,
+        }
         const kind = capturedKind(message.source.kind)
         // A plugin-, model-, or tool-sourced message is the harness talking to
         // itself; capturing it would feed the graph its own output as if it
@@ -314,6 +326,7 @@ export function apply(ctx: Context, config: Config): void {
           fidelity: reduced.reduced ? 'summary' : 'verbatim',
           attachments,
           provenance: { ...provenance, author: 'user' },
+          capture,
         })
         return
       }
@@ -328,6 +341,12 @@ export function apply(ctx: Context, config: Config): void {
           text: reduced.text,
           fidelity: reduced.reduced ? 'summary' : 'verbatim',
           provenance: { ...provenance, author: 'agent', turn: event.data.turn },
+          capture: {
+            originalLength: text.length,
+            retainedLength: reduced.text.length,
+            truncated: reduced.reduced,
+            lengthUnit: 'utf16-code-units',
+          },
         })
         return
       }

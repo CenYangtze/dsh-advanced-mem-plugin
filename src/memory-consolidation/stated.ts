@@ -25,6 +25,7 @@ import type {
   MemoryDistillation,
   MemoryDistillInput,
   MemoryDistiller,
+  MemoryDistillerProgressPolicy,
   MemoryNodeType,
   MemoryRecord,
   MemoryRecordId,
@@ -153,12 +154,18 @@ interface Tally {
 export class StatedPreferenceDistiller implements MemoryDistiller {
   /** Provider name, attributed on the proposals it makes. */
   readonly name = 'stated-preference'
+  /** Progress identity; bump when the extraction semantics change to replay records. */
+  readonly version = '1'
+  /** Per-record progress: each statement is checked and advanced on its own. */
+  readonly progress: MemoryDistillerProgressPolicy
 
   /**
    * @param rank - ordering among mounted distillers; runs after frequency mining, which is cheaper.
    * @param policy - the mining thresholds from the plugin configuration.
    */
-  constructor(readonly rank: number, private readonly policy: StatedPolicy) {}
+  constructor(readonly rank: number, private readonly policy: StatedPolicy) {
+    this.progress = { mode: 'record', maxAttempts: policy.progressMaxAttempts }
+  }
 
   /**
    * Mine one window of layer-0 records.

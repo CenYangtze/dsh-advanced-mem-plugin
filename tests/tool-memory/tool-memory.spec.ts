@@ -39,6 +39,14 @@ const memoryConfig: MemoryConfig = {
   duplicateThreshold: 1,
   diversityThreshold: 1,
   vectorWeight: 1,
+  safety: {
+    redactPrivateKeys: true,
+    redactProviderTokens: true,
+    redactBearerTokens: true,
+    redactSecretAssignments: true,
+    rejectSensitivePatterns: false,
+    blockedLiterals: [],
+  },
 }
 
 const toolConfig = {
@@ -227,6 +235,87 @@ describe('memory_write', () => {
     expect(text(result)).toContain('and linked it')
   })
 
+  it('replaces an existing node with a new identity using real user evidence', async () => {
+    const ctx = await setup()
+    const agent = workspaceAgent(ctx, 'w-9')
+    const created = await invoke(ctx, 'memory_write', {
+      type: 'preference', label: 'pnpm', summary: 'Installs with pnpm.', stated_by_user: true,
+    }, agent)
+    const target = (created.value as { id: string }).id
+    const evidence = await ctx.memory.remember({
+      scope: { kind: 'workspace', workspace: '/repo' },
+      kind: 'user-message',
+      text: 'Actually, use yarn instead of pnpm.',
+      fidelity: 'verbatim',
+      provenance: { author: 'user', sessionId: agent.session.id, turn: 1 },
+    })
+    const result = await invoke(ctx, 'memory_write', {
+      operation: 'replace',
+      type: 'preference',
+      label: 'yarn',
+      summary: 'Uses yarn instead of pnpm.',
+      stated_by_user: true,
+      target_id: target,
+      evidence_record_ids: [evidence.id],
+      quote: 'use yarn instead of pnpm',
+    }, agent)
+    expect(text(result)).toBe(
+      `Replaced ${target} with "yarn" in workspace scope at confidence 0.9.`,
+    )
+    const scope = { kind: 'workspace' as const, workspace: '/repo' }
+    expect(ctx.memory.store.getNode(target as never)).toMatchObject({ status: 'superseded' })
+    expect(ctx.memory.profile([scope]).nodes.some(node => node.label === 'yarn')).toBe(true)
+  })
+
+  it('refuses agent-authored or quote-less replacement evidence', async () => {
+    const ctx = await setup()
+    const agent = workspaceAgent(ctx, 'w-10')
+    const created = await invoke(ctx, 'memory_write', {
+      type: 'preference', label: 'pnpm', summary: 'Installs with pnpm.', stated_by_user: true,
+    }, agent)
+    const target = (created.value as { id: string }).id
+    const note = await ctx.memory.remember({
+      scope: { kind: 'workspace', workspace: '/repo' },
+      kind: 'note', text: 'Use yarn.', fidelity: 'derived', use: 'evidence',
+      provenance: { author: 'agent' },
+    })
+    const base = {
+      operation: 'replace', type: 'preference', label: 'yarn', summary: 'Uses yarn.',
+      stated_by_user: true, target_id: target, evidence_record_ids: [note.id], quote: 'Use yarn.',
+    }
+    expect(text(await invoke(ctx, 'memory_write', base, agent))).toContain('not user-authored')
+
+    const user = await ctx.memory.remember({
+      scope: { kind: 'workspace', workspace: '/repo' },
+      kind: 'user-message', text: 'Use yarn.', fidelity: 'verbatim',
+      provenance: { author: 'user', sessionId: agent.session.id, turn: 2 },
+    })
+    expect(text(await invoke(ctx, 'memory_write', {
+      ...base, evidence_record_ids: [user.id], quote: 'not present',
+    }, agent))).toContain('quote is not present')
+  })
+
+  it('does not let a direct write bypass the runtime filter', async () => {
+    const ctx = await setup()
+    const agent = workspaceAgent(ctx, 'w-12')
+    await invoke(ctx, 'memory_write', {
+      type: 'preference', label: 'secret-config', summary: 'Uses token=abcdef123456 for deploys.', stated_by_user: true,
+    }, agent)
+    const node = ctx.memory.profile([{ kind: 'workspace', workspace: '/repo' }]).nodes[0]
+    expect(node?.summary).not.toContain('abcdef123456')
+    expect(node?.summary).toContain('[redacted:secret-assignment]')
+  })
+
+  it('keeps the original add call backward compatible', async () => {
+    const ctx = await setup()
+    const agent = workspaceAgent(ctx, 'w-11')
+    const result = await invoke(ctx, 'memory_write', {
+      type: 'preference', label: 'tabs', summary: 'Uses tabs.', stated_by_user: false,
+    }, agent)
+    expect(text(result)).toContain('Remembered "tabs"')
+    expect((result.value as { id?: string }).id).toBeDefined()
+  })
+
   it('rejects a link with no relation or claim rather than storing a nameless edge', async () => {
     const ctx = await setup()
     const agent = workspaceAgent(ctx, 'w-5')
@@ -279,6 +368,52 @@ describe('memory_write', () => {
 })
 
 describe('memory_search', () => {
+  it('does not expose legacy secret text through memory_search', async () => {
+    const ctx = await setup()
+    const agent = workspaceAgent(ctx, 's-legacy')
+    const scope = 'workspace:/repo' as never
+    const secret = 'secret=abcdef123456'
+    await ctx.memory.store.putRecord({
+      id: 'mem-r-legacy' as never, scope, kind: 'user-message', text: `deploy ${secret}`,
+      fidelity: 'verbatim', use: 'recallable', terms: ['deploy', 'secret'], attachments: [],
+      provenance: { author: 'user', sessionId: 's1' as never, turn: 1 },
+      createdAt: 1, promotedTo: [], status: 'active',
+    })
+    await ctx.memory.store.putNode({
+      id: 'mem-n-legacy' as never, scope, type: 'preference', label: 'deploy',
+      summary: `Deploy ${secret}`, attributes: {}, confidence: 0.9, decay: { halfLifeMs: null },
+      support: { observations: 1, reinforcements: 0, contradictions: 0, sessions: 1, firstSeenAt: 1, lastSeenAt: 1 },
+      evidence: ['mem-r-legacy' as never], origin: 'asserted', status: 'active', createdAt: 1, updatedAt: 1,
+    })
+    const result = await invoke(ctx, 'memory_search', { query: 'deploy secret', include_episodes: true }, agent)
+    expect(text(result)).not.toContain('abcdef123456')
+  })
+
+  it('exposes node and record ids for later explicit replacement', async () => {
+    const ctx = await setup()
+    const agent = workspaceAgent(ctx, 's-ids')
+    await invoke(ctx, 'memory_write', {
+      type: 'preference', label: 'pnpm', summary: 'Installs with pnpm.', stated_by_user: true,
+    }, agent)
+    await ctx.memory.remember({
+      scope: { kind: 'workspace', workspace: '/repo' },
+      kind: 'user-message', text: 'I install with pnpm.', fidelity: 'verbatim',
+      provenance: { author: 'user', sessionId: agent.session.id, turn: 1 },
+    })
+    const result = await invoke(ctx, 'memory_search', { query: 'installs pnpm', include_episodes: true }, agent)
+    const value = result.value as { results: { id: string; kind: string }[] }
+    expect(value.results.some(entry => entry.kind === 'preference' && entry.id.startsWith('mem-n-'))).toBe(true)
+    expect(value.results.some(entry => entry.kind.startsWith('episode:') && entry.id.startsWith('mem-r-'))).toBe(true)
+  })
+
+  it('filters a search query before it reaches the embedder or rendered result', async () => {
+    const ctx = await setup()
+    const agent = workspaceAgent(ctx, 's-safe')
+    const result = await invoke(ctx, 'memory_search', { query: 'token=abcdef123456 deploy' }, agent)
+    expect(text(result)).not.toContain('abcdef123456')
+    expect(text(result)).toContain('[redacted:secret-assignment]')
+  })
+
   it('finds a written belief and reports its confidence and origin', async () => {
     const ctx = await setup()
     const agent = workspaceAgent(ctx, 's-1')

@@ -29,6 +29,14 @@ const memoryConfig = {
   duplicateThreshold: 1,
   diversityThreshold: 1,
   vectorWeight: 1,
+  safety: {
+    redactPrivateKeys: true,
+    redactProviderTokens: true,
+    redactBearerTokens: true,
+    redactSecretAssignments: true,
+    rejectSensitivePatterns: false,
+    blockedLiterals: [],
+  },
 } satisfies MemoryConfig
 
 const commandConfig = { profileLimit: 5, suggestLimit: 3, searchLimit: 5 } satisfies commandMemory.Config
@@ -149,6 +157,12 @@ describe('/memory', () => {
     expect(await run('search force-push branches')).toContain('Never force-push shared branches.')
   })
 
+  it('does not echo a secret from a search query', async () => {
+    const { run } = await harness()
+    const output = await run('search token=abcdef123456 deploy')
+    expect(output).not.toContain('abcdef123456')
+  })
+
   it('never surfaces the agent own tool calls through search', async () => {
     const { ctx, run } = await harness()
     await ctx.memory.remember({
@@ -175,6 +189,31 @@ describe('/memory', () => {
       scope: workspace, type: 'project', label: 'Pic-To-LaTeX', summary: 'The tool.', origin: 'asserted',
     })
     expect(await run('forget pic-to-latex')).toContain('Retracted 1 memory item(s)')
+  })
+
+  it('does not print a legacy secret from a forgotten belief summary', async () => {
+    const { ctx, run } = await harness()
+    const scope = 'workspace:/repo' as never
+    const secret = 'secret=abcdef123456'
+    await ctx.memory.store.putNode({
+      id: 'mem-n-legacy' as never,
+      scope,
+      type: 'project',
+      label: 'legacy-secret',
+      summary: `Deploy ${secret}`,
+      attributes: {},
+      confidence: 0.9,
+      decay: { halfLifeMs: null },
+      support: { observations: 1, reinforcements: 0, contradictions: 0, sessions: 1, firstSeenAt: 1, lastSeenAt: 1 },
+      evidence: ['mem-r-legacy' as never],
+      origin: 'asserted',
+      status: 'active',
+      createdAt: 1,
+      updatedAt: 1,
+    })
+    const output = await run('forget legacy-secret')
+    expect(output).not.toContain('abcdef123456')
+    expect(output).toContain('[redacted:secret-assignment]')
   })
 
   it('reports an unknown label instead of silently succeeding', async () => {

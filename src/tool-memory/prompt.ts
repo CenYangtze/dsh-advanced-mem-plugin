@@ -34,4 +34,6 @@ Search memory yourself with \`memory_search\` before you:
 
 Record with \`memory_write\` when you learn something that will still matter in a later session: a preference or constraint the user stated, a correction they made, a durable fact about their project or how they work. Set \`stated_by_user\` only when the user actually said it — that is what separates a fact from your guess, and it decides whether the memory is allowed to fade. Do not record transient task state, credentials, or a conclusion drawn from one ambiguous signal.
 
+\`memory_search\` returns node and record ids. When the user corrects an existing belief, use \`memory_write\` with \`operation: "replace"\`, the old node id as \`target_id\`, and one or more real user record ids plus a verbatim \`quote\` as new evidence. Your own summary or note is not user evidence. Different values that are not an explicit correction should stay separate memories, not overwrite the old one.
+
 Use \`memory_forget\` when a memory turns out to be wrong or the user asks you to drop it.`

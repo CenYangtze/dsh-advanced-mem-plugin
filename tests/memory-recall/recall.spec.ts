@@ -40,6 +40,14 @@ const memoryConfig: MemoryConfig = {
   duplicateThreshold: 1,
   diversityThreshold: 1,
   vectorWeight: 1,
+  safety: {
+    redactPrivateKeys: true,
+    redactProviderTokens: true,
+    redactBearerTokens: true,
+    redactSecretAssignments: true,
+    rejectSensitivePatterns: false,
+    blockedLiterals: [],
+  },
 }
 
 const baseConfig = {
@@ -306,6 +314,46 @@ describe('memory-recall', () => {
       () => Promise.resolve({ kind: 'reject' as const, reason: 'no' } as unknown as PreStepDecision),
     )
     expect(decision.kind).toBe('reject')
+  })
+
+  it('never injects legacy secret text through the real pre-step hook', async () => {
+    const ctx = await setup()
+    const agent = agentOf(ctx, 'a-safe')
+    const scope = 'workspace:/repo' as MemoryScopeKey
+    const secret = 'secret=abcdef123456'
+    await ctx.memory.store.putRecord({
+      id: 'mem-r-legacy' as MemoryRecordId,
+      scope,
+      kind: 'user-message',
+      text: `deploy ${secret}`,
+      fidelity: 'verbatim',
+      use: 'recallable',
+      terms: ['deploy', 'secret'],
+      attachments: [],
+      provenance: { author: 'user', sessionId: 's1' as never, turn: 1 },
+      createdAt: 1,
+      promotedTo: [],
+      status: 'active',
+    })
+    await ctx.memory.store.putNode({
+      id: 'mem-n-legacy' as MemoryNodeId,
+      scope,
+      type: 'preference',
+      label: 'deploy',
+      summary: `Deploy ${secret}`,
+      attributes: { note: secret },
+      confidence: 0.9,
+      decay: { halfLifeMs: null },
+      support: { observations: 1, reinforcements: 0, contradictions: 0, sessions: 1, firstSeenAt: 1, lastSeenAt: 1 },
+      evidence: ['mem-r-legacy' as MemoryRecordId],
+      origin: 'asserted',
+      status: 'active',
+      createdAt: 1,
+      updatedAt: 1,
+    })
+    const added = await step(ctx, agent, 1, 1, 'deploy secret')
+    expect(added.join('\n')).not.toContain('abcdef123456')
+    expect(added.join('\n')).toContain('[redacted:secret-assignment]')
   })
 
   it('rejects an unusable budget at load rather than at the first turn', async () => {

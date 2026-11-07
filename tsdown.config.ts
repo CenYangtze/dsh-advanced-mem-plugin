@@ -16,6 +16,7 @@ export default defineConfig({
     'src/memory/invariant.ts',
     'src/memory-store-domain/index.ts',
     'src/memory-embedding-hash/index.ts',
+    'src/memory-embedding-kylin/index.ts',
     'src/memory-observer/index.ts',
     'src/memory-consolidation/index.ts',
     'src/memory-recall/index.ts',

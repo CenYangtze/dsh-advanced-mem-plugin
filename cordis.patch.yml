@@ -50,6 +50,17 @@
         # get. It is deliberately 1: the shipped feature-hash embedder is the
         # thing that had to be weighed down, not the seam.
         vectorWeight: 1
+        safety:
+          # Minimal high-confidence redaction at every write and external request.
+          # These are boolean switches over fixed patterns, not arbitrary regexes.
+          redactPrivateKeys: true
+          redactProviderTokens: true
+          redactBearerTokens: true
+          redactSecretAssignments: true
+          # false redacts; true rejects the whole input when a sensitive pattern matches.
+          rejectSensitivePatterns: false
+          # Literal strings this deployment refuses to store; matched case-insensitively.
+          blockedLiterals: []
 
     - id: memory-store
       name: dsh-advanced-mem-plugin/store-domain
@@ -98,6 +109,28 @@
         minStatements: 1
         minSubjectLength: 3
         maxSubjectLength: 60
+        # A behavior seen across turns is still one pattern: each pass reads this
+        # many already-processed records before the new ones, but only the new
+        # records advance progress.
+        behaviorLookbackRecords: 20
+        # A failed distillation or candidate apply is retried this many times,
+        # then left visible without consuming the pass forever.
+        progressMaxAttempts: 3
+        # Semantic extraction is off in the shipped profile. Enable it in an
+        # independent profile after reviewing the model route and budget.
+        semanticEnabled: false
+        semanticMaxRecords: 6
+        semanticMaxInputCharacters: 12000
+        semanticMaxOutputBytes: 32768
+        semanticMaxCandidates: 8
+        semanticMaxExistingNodes: 12
+        semanticMaxTokens: 1200
+        semanticTemperature: 0
+        semanticTimeoutMs: 30000
+        semanticMaxFieldLength: 160
+        semanticMaxCallsPerPass: 2
+        semanticMaxConcurrentCalls: 1
+        semanticPromptVersion: semantic-v4
         consolidateEveryTurns: 5
         sweepEveryTurns: 50
 

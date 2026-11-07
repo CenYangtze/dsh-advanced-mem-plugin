@@ -7,7 +7,7 @@ import Storage from '@deepseek-ai/dsh-storage'
 import * as storageJson from '@deepseek-ai/dsh-storage-json'
 import * as storageDomain from '@deepseek-ai/dsh-storage-domain'
 import MemoryRuntime from '../../src/memory/index.ts'
-import type { Config as MemoryConfig, MemoryScope } from '../../src/memory/index.ts'
+import type { Config as MemoryConfig, MemoryDistiller, MemoryScope } from '../../src/memory/index.ts'
 import { apply, memoryDomainSpec } from '../../src/memory-store-domain/index.ts'
 
 const memoryConfig: MemoryConfig = {
@@ -27,6 +27,14 @@ const memoryConfig: MemoryConfig = {
   duplicateThreshold: 1,
   diversityThreshold: 1,
   vectorWeight: 1,
+  safety: {
+    redactPrivateKeys: true,
+    redactProviderTokens: true,
+    redactBearerTokens: true,
+    redactSecretAssignments: true,
+    rejectSensitivePatterns: false,
+    blockedLiterals: [],
+  },
 }
 
 const workspace: MemoryScope = { kind: 'workspace', workspace: '/repo' }
@@ -50,8 +58,8 @@ afterEach(async () => {
 })
 
 describe('memoryDomainSpec', () => {
-  it('declares one table per stored element', () => {
-    expect(Object.keys(memoryDomainSpec.tables).sort()).toEqual(['edges', 'nodes', 'records'])
+  it('declares one table per stored element plus consolidation progress', () => {
+    expect(Object.keys(memoryDomainSpec.tables).sort()).toEqual(['edges', 'nodes', 'progress', 'records'])
   })
 })
 
@@ -89,6 +97,99 @@ describe('DomainMemoryStore', () => {
     const recall = await second.ctx.memory.recall({ text: 'installs', scopes: [workspace] })
     const first_cue = recall.cues[0]
     expect(first_cue?.kind === 'node' && first_cue.node.label).toBe('pnpm')
+    await second.ctx.fiber.dispose()
+  })
+
+  it('erases progress rows with the record and keeps them gone after reload', async () => {
+    const first = await harness()
+    const distiller: MemoryDistiller = {
+      name: 'progress-cleanup',
+      rank: 1,
+      version: '1',
+      progress: { mode: 'record', maxAttempts: 1 },
+      distill: () => Promise.resolve({ nodes: [], edges: [] }),
+    }
+    first.ctx.memory.registerDistiller(distiller)
+    const record = await first.ctx.memory.remember({
+      scope: workspace, kind: 'user-message', text: 'ordinary conversation', fidelity: 'verbatim',
+    })
+    await first.ctx.memory.consolidate(workspace)
+    const scopes = ['workspace:/repo' as never]
+    expect([...first.ctx.memory.store.progressStore!.progress(scopes)]).toHaveLength(1)
+    expect(await first.ctx.memory.forget(record.id)).toBe(true)
+    expect([...first.ctx.memory.store.progressStore!.progress(scopes)]).toEqual([])
+    await first.ctx.fiber.dispose()
+
+    const second = await harness(first.directory)
+    expect([...second.ctx.memory.store.progressStore!.progress(scopes)]).toEqual([])
+    await second.ctx.fiber.dispose()
+  })
+
+  it('persists consolidation progress so a reload does not rescan an empty window', async () => {
+    const first = await harness()
+    const distiller: MemoryDistiller = {
+      name: 'progress-fixture',
+      rank: 1,
+      version: '1',
+      progress: { mode: 'record', maxAttempts: 1 },
+      distill: () => Promise.resolve({ nodes: [], edges: [] }),
+    }
+    first.ctx.memory.registerDistiller(distiller)
+    await first.ctx.memory.remember({
+      scope: workspace, kind: 'user-message', text: 'ordinary conversation', fidelity: 'verbatim',
+    })
+    expect((await first.ctx.memory.consolidate(workspace)).examined).toBe(1)
+    await first.ctx.fiber.dispose()
+
+    const second = await harness(first.directory)
+    second.ctx.memory.registerDistiller(distiller)
+    const rows = [...second.ctx.memory.store.progressStore!.progress(['workspace:/repo' as never])]
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toMatchObject({ distiller: 'progress-fixture', version: '1', status: 'empty', attempts: 1 })
+    expect((await second.ctx.memory.consolidate(workspace)).examined).toBe(0)
+    await second.ctx.fiber.dispose()
+  })
+
+  it('persists a replacement node, tombstone and supersedes edge across reload', async () => {
+    const first = await harness()
+    const oldEvidence = await first.ctx.memory.remember({
+      scope: workspace, kind: 'user-message', text: 'I prefer pnpm over npm.', fidelity: 'verbatim',
+      provenance: { author: 'user', sessionId: 's1' as never, turn: 1 },
+    })
+    const old = await first.ctx.memory.assert({
+      scope: workspace, type: 'preference', label: 'pnpm over npm', summary: 'Prefers pnpm over npm.',
+      origin: 'asserted', evidence: [oldEvidence.id],
+    })
+    const correction = await first.ctx.memory.remember({
+      scope: workspace, kind: 'user-message', text: 'Actually, use yarn instead of pnpm.', fidelity: 'verbatim',
+      provenance: { author: 'user', sessionId: 's1' as never, turn: 2 },
+    })
+    const replaced = await first.ctx.memory.replace({
+      scope: workspace,
+      target: old.id,
+      type: 'preference',
+      label: 'pnpm over yarn',
+      summary: 'Prefers pnpm over yarn.',
+      origin: 'asserted',
+      evidence: [correction.id],
+      quote: 'use yarn instead of pnpm',
+    })
+    await first.ctx.fiber.dispose()
+
+    const second = await harness(first.directory)
+    expect(second.ctx.memory.store.getNode(old.id)).toMatchObject({
+      status: 'superseded',
+      supersededBy: replaced.replacement.id,
+    })
+    expect(second.ctx.memory.store.getNode(replaced.replacement.id)).toMatchObject({
+      status: 'active',
+      evidence: [correction.id],
+    })
+    expect(second.ctx.memory.store.getEdge(replaced.edge.id)).toMatchObject({
+      from: replaced.replacement.id,
+      to: old.id,
+      relation: 'supersedes',
+    })
     await second.ctx.fiber.dispose()
   })
 

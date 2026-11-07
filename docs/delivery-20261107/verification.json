@@ -1,0 +1,16 @@
+{
+  "classification": "clean-fix-only-candidate-engineering-verification",
+  "baseCommit": "f840e1cdd5372cf74c7f7a6bce2e797c2f2b401a",
+  "testedCandidateTree": "7bdc1078d44427e3b6e1f57e518ed200faaaa220",
+  "node": "24.19.0",
+  "command": "pnpm run check",
+  "typecheck": "passed",
+  "testFiles": { "passed": 22, "failed": 0 },
+  "tests": { "passed": 410, "failed": 0 },
+  "build": "passed",
+  "bundleVerification": { "status": "passed", "patchRows": 10, "entryPoints": 16 },
+  "isolation": "Exported from an alternate Git index. Original baseline33 changes excluded, except 33 fix-only additions to cordis.patch.yml. Dependencies reused through a node_modules junction; no fresh-install reproducibility claim.",
+  "priorAttempt": "Node 22.9.0: typecheck passed and 354 tests passed, but two benchmark suites could not load node:sqlite. The full check failed; it is not counted as a pass.",
+  "historicalCounts": "477 tests and 68 real SDK integration checks refer to earlier working-tree snapshots, not this clean fix-only candidate.",
+  "limits": "Engineering checks do not establish preference/conflict accuracy, retrieval quality, large-store latency, SDK long-term stability, or production deployment. Later documentation-only additions are not included in testedCandidateTree."
+}

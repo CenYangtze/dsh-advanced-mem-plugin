@@ -183,10 +183,18 @@ async function forget(ctx: Context, scopes: readonly MemoryScope[], label: strin
     return { kind: 'error', text: `No active memory labelled ${JSON.stringify(label)}. \`/memory\` lists what there is.` }
   }
   for (const node of matches) await ctx.memory.retract({ kind: 'node', id: node.id })
-  const summaries = matches.map(node => `- ${node.summary}`)
+  const visible = matches
+    .map(node => ctx.memory.safeNode(node))
+    .filter((node): node is MemoryNode => node !== undefined)
+  const summaries = visible.map(node => `- ${node.summary}`)
+  const withheld = matches.length - visible.length
   return {
     kind: 'success',
-    text: [`Retracted ${matches.length} memory item(s) labelled ${JSON.stringify(label)}:`, ...summaries].join('\n'),
+    text: [
+      `Retracted ${matches.length} memory item(s) labelled ${JSON.stringify(label)}:`,
+      ...summaries,
+      ...(withheld === 0 ? [] : [`- (${withheld} summary line(s) withheld by capture policy)`]),
+    ].join('\n'),
   }
 }
 
@@ -226,11 +234,11 @@ async function execute(ctx: Context, config: Config, invocation: CommandInvocati
         signal: invocation.signal,
       })
       if (recall.cues.length === 0) {
-        return { kind: 'success', text: `Nothing remembered for ${JSON.stringify(command.query)}.` }
+        return { kind: 'success', text: `Nothing remembered for ${JSON.stringify(recall.query)}.` }
       }
       return {
         kind: 'success',
-        text: [`Remembered for ${JSON.stringify(command.query)}:`, ...recall.cues.map(renderCue)].join('\n'),
+        text: [`Remembered for ${JSON.stringify(recall.query)}:`, ...recall.cues.map(renderCue)].join('\n'),
       }
     }
     case 'forget':

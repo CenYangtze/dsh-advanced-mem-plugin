@@ -13,6 +13,8 @@ const policy: StatedPolicy = {
   minStatements: 1,
   minSubjectLength: 3,
   maxSubjectLength: 60,
+  behaviorLookbackRecords: 10,
+  progressMaxAttempts: 3,
 }
 
 let counter = 0

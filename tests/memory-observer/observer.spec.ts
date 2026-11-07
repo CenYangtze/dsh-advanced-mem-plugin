@@ -25,6 +25,14 @@ const memoryConfig: MemoryConfig = {
   duplicateThreshold: 1,
   diversityThreshold: 1,
   vectorWeight: 1,
+  safety: {
+    redactPrivateKeys: true,
+    redactProviderTokens: true,
+    redactBearerTokens: true,
+    redactSecretAssignments: true,
+    rejectSensitivePatterns: false,
+    blockedLiterals: [],
+  },
 }
 
 const baseConfig = {
@@ -102,7 +110,7 @@ async function harness(overrides?: Partial<Config>) {
   const session = ctx.sessions.create(SessionId('s-1'), { meta: { cwd: '/repo' } })
   /** Let the observer's write chain drain before asserting. */
   const settle = async (): Promise<void> => {
-    for (let index = 0; index < 8; index++) await Promise.resolve()
+    for (let index = 0; index < 32; index++) await Promise.resolve()
   }
   return { ctx, store, session, settle }
 }
@@ -311,5 +319,34 @@ describe('memory-observer', () => {
     await ctx.plugin(MemoryRuntime, memoryConfig)
     expect(() => { observer.apply(ctx, { ...baseConfig, maxTextLength: 0 }) })
       .toThrow(/positive safe integer/)
+  })
+
+  it('records truncation length and that a tail preference was not captured', async () => {
+    const { store, session, settle } = await harness({ maxTextLength: 20 })
+    const text = `HEAD ${'x'.repeat(20)} TAIL-PREFERENCE: always use tabs`
+    userTurn(session, text)
+    await settle()
+    const record = store.written[0]
+    expect(record?.text).toBe(text.slice(0, 20))
+    expect(record?.fidelity).toBe('summary')
+    expect(record?.capture).toMatchObject({
+      originalLength: text.length,
+      retainedLength: 20,
+      truncated: true,
+      lengthUnit: 'utf16-code-units',
+      truncation: 'tail-removed',
+    })
+    expect(record?.text).not.toContain('TAIL-PREFERENCE')
+  })
+
+  it('does not split a surrogate pair at the truncation boundary', async () => {
+    const { store, session, settle } = await harness({ maxTextLength: 10 })
+    const text = `${'a'.repeat(9)}😀tail`
+    userTurn(session, text)
+    await settle()
+    const record = store.written[0]
+    expect(record?.text).toBe('a'.repeat(9))
+    expect(record?.capture?.retainedLength).toBe(9)
+    expect(() => encodeURIComponent(record?.text ?? '')).not.toThrow()
   })
 })
